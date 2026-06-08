@@ -28,22 +28,42 @@ python3 -m venv "${VENV_DIR}"
 
 echo "[install] Installing project packages..."
 "${VENV_DIR}/bin/python" -m pip install --upgrade pip wheel
-"${VENV_DIR}/bin/python" -m pip install -r "${ROOT_DIR}/requirements.txt"
+"${VENV_DIR}/bin/python" -m pip install -e "${ROOT_DIR}"
 
-chmod +x "${ROOT_DIR}"/scripts/*.sh
+chmod +x "${ROOT_DIR}"/scripts/*.sh "${ROOT_DIR}/meshnet"
+
+USER_BIN="${HOME}/.local/bin"
+LAUNCHER_PATH="${USER_BIN}/meshnet"
+mkdir -p "${USER_BIN}"
+
+if [[ -e "${LAUNCHER_PATH}" && "$(readlink "${LAUNCHER_PATH}" 2>/dev/null || true)" != "${ROOT_DIR}/meshnet" ]]; then
+  echo "[install] ${LAUNCHER_PATH} already exists; leaving it unchanged."
+  echo "[install] You can still run ${ROOT_DIR}/meshnet directly."
+else
+  ln -sf "${ROOT_DIR}/meshnet" "${LAUNCHER_PATH}"
+  echo "[install] Added launcher: ${LAUNCHER_PATH}"
+fi
 
 echo "[install] Installation complete."
 echo
 echo "[next] Confirm this Pi has a reachable Meshtastic USB radio:"
-echo "       ${VENV_DIR}/bin/python -m src.cli preflight --config config.master.yaml"
+echo "       meshnet check master"
 echo
 echo "[next] Run this on master:"
-echo "       ${VENV_DIR}/bin/python -m src.cli setup-radio --config config.master.yaml"
+echo "       meshnet setup master"
 echo
 echo "[next] Run this on slave:"
-echo "       ${VENV_DIR}/bin/python -m src.cli setup-radio --config config.slave.yaml"
+echo "       meshnet setup slave"
 echo
 echo "[next] Then run:"
-echo "       ${VENV_DIR}/bin/python -m src.cli test --config config.master.yaml"
+echo "       meshnet test"
 echo
 echo "[next] If serial permissions were changed, log out and back in before using the radio."
+
+case ":${PATH}:" in
+  *":${USER_BIN}:"*) ;;
+  *)
+    echo "[next] ${USER_BIN} is not in PATH in this shell."
+    echo "       Until it is, run: ${ROOT_DIR}/meshnet check master"
+    ;;
+esac

@@ -11,8 +11,43 @@ from .master import MasterNode, run_master
 from .preflight import PreflightError, preflight_check, require_preflight
 from .radio import detect_serial_ports, setup_radio
 from .slave import run_slave
-from .telegram_bridge import run_telegram_bridge
+from .telegram_bridge import print_telegram_chat_ids, run_telegram_bridge
 from .tester import run_tests
+
+
+ROLE_CONFIGS = {
+    "master": "config.master.yaml",
+    "slave": "config.slave.yaml",
+}
+
+
+def add_role_shortcut(
+    parser: argparse._SubParsersAction[argparse.ArgumentParser],
+    name: str,
+    help_text: str,
+    role: str,
+) -> None:
+    cmd = parser.add_parser(name, help=help_text)
+    cmd.add_argument("--config", default=ROLE_CONFIGS[role])
+
+
+def add_role_command(
+    parser: argparse._SubParsersAction[argparse.ArgumentParser],
+    name: str,
+    help_text: str,
+    *,
+    required: bool = False,
+) -> None:
+    cmd = parser.add_parser(name, help=help_text)
+    cmd.add_argument("role", nargs=None if required else "?", choices=ROLE_CONFIGS, default=None)
+    cmd.add_argument("--config", default=None)
+
+
+def apply_role_config(args: argparse.Namespace, default_role: str = "master") -> None:
+    if getattr(args, "config", None):
+        return
+    role = getattr(args, "role", None) or default_role
+    args.config = ROLE_CONFIGS[role]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,13 +57,24 @@ def build_parser() -> argparse.ArgumentParser:
     detect = sub.add_parser("detect", help="detect Meshtastic USB serial port")
     detect.add_argument("--plain", action="store_true", help="print only the detected port")
 
+    telegram_id = sub.add_parser("telegram-id", help="print recent Telegram chat IDs")
+    telegram_id.add_argument("--config", default="config.master.yaml")
+
+    add_role_shortcut(sub, "master", "start the master node", "master")
+    add_role_shortcut(sub, "slave", "start the slave node", "slave")
+    add_role_command(sub, "start", "start the selected node")
+    add_role_command(sub, "check", "run preflight checks")
+    add_role_command(sub, "setup", "apply radio setup for the selected node", required=True)
+    add_role_command(sub, "nodes", "discover compatible mesh nodes")
+
     for name in ("preflight", "info", "setup-radio", "run", "discover", "ping", "test", "telegram"):
         cmd = sub.add_parser(name)
         cmd.add_argument("--config", default="config.master.yaml")
 
     send = sub.add_parser("send")
     send.add_argument("--config", default="config.master.yaml")
-    send.add_argument("--text", required=True)
+    send.add_argument("message", nargs="?", help="message text")
+    send.add_argument("--text", help="message text")
     send.add_argument("--dst", default="")
 
     return parser
@@ -140,10 +186,15 @@ def command_ping(args: argparse.Namespace) -> int:
 
 def command_send(args: argparse.Namespace) -> int:
     cfg = load_and_preflight(args)
+    text = args.text or args.message
+    if not text:
+        logger.line("meshnet", "Missing message text.")
+        logger.detail('Use: meshnet send "hello"', indent=8)
+        return 2
     node = MasterNode(cfg, "mesh")
     try:
         node.connect()
-        node.send_text_message(args.text, args.dst or cfg.peer_node_id)
+        node.send_text_message(text, args.dst or cfg.peer_node_id)
     finally:
         node.close()
     return 0
@@ -160,6 +211,11 @@ def command_telegram(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_telegram_id(args: argparse.Namespace) -> int:
+    cfg = load_for_args(args)
+    return print_telegram_chat_ids(cfg)
+
+
 def command_preflight(args: argparse.Namespace) -> int:
     cfg = load_for_args(args)
     result = preflight_check(cfg)
@@ -170,8 +226,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command in ("start", "check", "setup", "nodes"):
+            apply_role_config(args)
         if args.command == "detect":
             return command_detect(args)
+        if args.command == "telegram-id":
+            return command_telegram_id(args)
+        if args.command in ("master", "slave", "start"):
+            return command_run(args)
+        if args.command == "check":
+            return command_preflight(args)
+        if args.command == "setup":
+            return command_setup_radio(args)
+        if args.command == "nodes":
+            return command_discover(args)
         if args.command == "preflight":
             return command_preflight(args)
         if args.command == "info":

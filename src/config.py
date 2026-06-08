@@ -126,6 +126,19 @@ def _bool(section: Mapping[str, Any], key: str, default: bool) -> bool:
     return bool(value)
 
 
+def _env_str_if_blank(section: Mapping[str, Any], key: str, env_key: str) -> str:
+    value = _str(section, key)
+    if value:
+        return value
+    return os.getenv(env_key, "")
+
+
+def _env_bool_or_config(section: Mapping[str, Any], key: str, env_key: str, default: bool) -> bool:
+    if os.getenv(env_key):
+        return os.getenv(env_key, "").strip().lower() in {"1", "true", "yes", "on"}
+    return _bool(section, key, default)
+
+
 def load_config(path: str | os.PathLike[str]) -> MeshConfig:
     config_path = Path(path).expanduser().resolve()
     with config_path.open("r", encoding="utf-8") as fh:
@@ -178,12 +191,10 @@ def load_config(path: str | os.PathLike[str]) -> MeshConfig:
             allow_fast_ping_interval=_bool(runtime, "allow_fast_ping_interval", False),
         ),
         telegram=TelegramConfig(
-            enabled=_bool(telegram, "enabled", False),
-            bot_token=_str(telegram, "bot_token", os.getenv("TELEGRAM_BOT_TOKEN", "")),
-            allowed_chat_id=_str(
-                telegram,
-                "allowed_chat_id",
-                os.getenv("TELEGRAM_ALLOWED_CHAT_ID", ""),
+            enabled=_env_bool_or_config(telegram, "enabled", "TELEGRAM_ENABLED", False),
+            bot_token=_env_str_if_blank(telegram, "bot_token", "TELEGRAM_BOT_TOKEN"),
+            allowed_chat_id=_env_str_if_blank(
+                telegram, "allowed_chat_id", "TELEGRAM_ALLOWED_CHAT_ID"
             ),
         ),
     )

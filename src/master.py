@@ -131,10 +131,11 @@ class MasterNode(MeshNode):
         except KeyboardInterrupt:
             logger.line("ping", "Stopped.")
 
-    def send_text_message(self, text: str, target: str | None = None) -> None:
+    def send_text_message(self, text: str, target: str | None = None) -> Envelope:
         target = target or self.cfg.network.slave_id
-        self.send("text", dst=target, body=text)
+        envelope = self.send("text", dst=target, body=text)
         logger.line("mesh", f"Text sent to {target}: {text}")
+        return envelope
 
 
 def print_no_node_help(timeout: int) -> None:

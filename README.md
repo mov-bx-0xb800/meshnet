@@ -62,6 +62,14 @@ cd meshnet
 
 The installer creates `meshnet/.venv`, installs Python dependencies, and adds the current user to the `dialout` group when available. Log out and back in if serial permissions changed.
 
+After installation, use the `meshnet` command:
+
+```bash
+meshnet check master
+meshnet setup master
+meshnet master
+```
+
 ## Configure Master
 
 Edit `config.master.yaml` on the master Pi:
@@ -127,22 +135,28 @@ Then it sends the key to the Meshtastic CLI as `base64:{key}`.
 
 ## CLI Commands
 
-Run commands from the `meshnet/` directory:
+Use these commands after running `./install.sh`:
 
 ```bash
-.venv/bin/python -m src.cli detect
-.venv/bin/python -m src.cli preflight --config config.master.yaml
-.venv/bin/python -m src.cli info --config config.master.yaml
-.venv/bin/python -m src.cli setup-radio --config config.master.yaml
-.venv/bin/python -m src.cli run --config config.master.yaml
-.venv/bin/python -m src.cli discover --config config.master.yaml
-.venv/bin/python -m src.cli send --config config.master.yaml --text "hello"
-.venv/bin/python -m src.cli ping --config config.master.yaml
-.venv/bin/python -m src.cli test --config config.master.yaml
-.venv/bin/python -m src.cli telegram --config config.master.yaml
+meshnet detect
+meshnet check master
+meshnet check slave
+meshnet info
+meshnet setup master
+meshnet setup slave
+meshnet master
+meshnet slave
+meshnet nodes
+meshnet send "hello"
+meshnet ping
+meshnet test
+meshnet telegram-id
+meshnet telegram
 ```
 
-Helper scripts are also available:
+The old Python module form still works for debugging, but normal use should go through `meshnet`.
+
+Helper scripts are still available:
 
 ```bash
 scripts/detect-port.sh
@@ -167,7 +181,7 @@ Before `info`, `setup-radio`, `run`, `discover`, `ping`, `send`, `test`, or `tel
 Run the check directly:
 
 ```bash
-.venv/bin/python -m src.cli preflight --config config.master.yaml
+meshnet check master
 ```
 
 Expected success:
@@ -188,7 +202,7 @@ If the radio is missing, permissions are wrong, Meshtastic is not installed, or 
 Run on the master Pi:
 
 ```bash
-.venv/bin/python -m src.cli setup-radio --config config.master.yaml
+meshnet setup master
 ```
 
 Expected final line:
@@ -200,7 +214,7 @@ Expected final line:
 Run on the slave Pi:
 
 ```bash
-.venv/bin/python -m src.cli setup-radio --config config.slave.yaml
+meshnet setup slave
 ```
 
 Expected final line:
@@ -214,13 +228,13 @@ Expected final line:
 Start the slave runtime first:
 
 ```bash
-.venv/bin/python -m src.cli run --config config.slave.yaml
+meshnet slave
 ```
 
 Then on the master:
 
 ```bash
-.venv/bin/python -m src.cli discover --config config.master.yaml
+meshnet nodes
 ```
 
 Expected result:
@@ -235,13 +249,13 @@ Expected result:
 On the slave:
 
 ```bash
-.venv/bin/python -m src.cli run --config config.slave.yaml
+meshnet slave
 ```
 
 On the master:
 
 ```bash
-.venv/bin/python -m src.cli ping --config config.master.yaml
+meshnet ping
 ```
 
 Default interval is 10 seconds. Values below 5 seconds are clamped to 5 seconds unless `runtime.allow_fast_ping_interval: true` is explicitly set.
@@ -251,7 +265,7 @@ Default interval is 10 seconds. Values below 5 seconds are clamped to 5 seconds 
 With the slave runtime running, run on the master:
 
 ```bash
-.venv/bin/python -m src.cli test --config config.master.yaml
+meshnet test
 ```
 
 The test suite checks:
@@ -290,32 +304,54 @@ MeshNet also rejects encoded envelopes above 230 characters. This is intentional
 Telegram is optional and requires internet on the master Pi.
 
 1. Create a Telegram bot with BotFather.
-2. Put the bot token and allowed chat ID in `config.master.yaml` or `.env`.
-3. Enable Telegram:
-
-```yaml
-telegram:
-  enabled: true
-  bot_token: "123456:token"
-  allowed_chat_id: "-123456789"
-```
-
-4. Start the bridge:
+2. Put the bot token in `.env`, not in tracked YAML:
 
 ```bash
-.venv/bin/python -m src.cli telegram --config config.master.yaml
+cp .env.example .env
+```
+
+```dotenv
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN="123456:token"
+TELEGRAM_ALLOWED_CHAT_ID=""
+```
+
+3. Open Telegram and send any message to your bot.
+4. Print the recent chat IDs:
+
+```bash
+meshnet telegram-id
+```
+
+5. Copy the correct chat ID into `.env`:
+
+```dotenv
+TELEGRAM_ALLOWED_CHAT_ID="123456789"
+```
+
+Group chat IDs usually start with `-`.
+
+6. Start the bridge on the master Pi:
+
+```bash
+meshnet telegram
 ```
 
 Supported Telegram commands:
 
 - `/start`
+- `/help`
 - `/status`
+- `/stats`
 - `/nodes`
 - `/discover`
 - `/ping`
 - `/test`
+- `/events on`
+- `/events off`
+- `/send hello`
 
-Text sent by the allowed chat is forwarded as a MeshNet `text` message. Valid incoming MeshNet text messages are posted back to Telegram.
+Text sent by the allowed chat is forwarded as a MeshNet `text` message. Valid incoming MeshNet text, status, and error messages are posted back to Telegram while event notifications are on. `/stats` reports bridge counters such as Telegram messages, mesh messages, text in/out, ping results, discoveries, quick tests, and last mesh RX/TX times.
 
 ## Run On Boot With Systemd
 
@@ -421,22 +457,22 @@ The Meshtastic radio mesh and Python runtime work offline after installation. Te
 Master:
 
 ```bash
-.venv/bin/python -m src.cli preflight --config config.master.yaml
-.venv/bin/python -m src.cli setup-radio --config config.master.yaml
+meshnet check master
+meshnet setup master
 ```
 
 Slave:
 
 ```bash
-.venv/bin/python -m src.cli preflight --config config.slave.yaml
-.venv/bin/python -m src.cli setup-radio --config config.slave.yaml
-.venv/bin/python -m src.cli run --config config.slave.yaml
+meshnet check slave
+meshnet setup slave
+meshnet slave
 ```
 
 Master:
 
 ```bash
-.venv/bin/python -m src.cli discover --config config.master.yaml
-.venv/bin/python -m src.cli ping --config config.master.yaml
-.venv/bin/python -m src.cli test --config config.master.yaml
+meshnet nodes
+meshnet ping
+meshnet test
 ```

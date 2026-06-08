@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "${SOURCE}" ]]; do
+  SOURCE_DIR="$(cd -P "$(dirname "${SOURCE}")" && pwd)"
+  SOURCE="$(readlink "${SOURCE}")"
+  [[ "${SOURCE}" != /* ]] && SOURCE="${SOURCE_DIR}/${SOURCE}"
+done
+
+ROOT_DIR="$(cd -P "$(dirname "${SOURCE}")" && pwd)"
+PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
+
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "[meshnet] Not installed yet."
+  echo "[meshnet] Run: cd ${ROOT_DIR} && ./install.sh"
+  exit 1
+fi
+
+cd "${ROOT_DIR}"
+exec "${PYTHON_BIN}" -m src.cli "$@"
