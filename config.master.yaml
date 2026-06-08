@@ -1,0 +1,39 @@
+app:
+  node_id: "master-001"
+  role: "master"
+  node_name: "Master Pi Node"
+  node_short_name: "MSTR"
+  log_level: "INFO"
+
+radio:
+  port: "auto"
+  region: "MY_919"
+  modem_preset: "LONG_FAST"
+  hop_limit: 3
+  channel_index: 0
+  channel_name: "ERICMESH"
+  channel_psk_mode: "derived"
+  channel_psk_base64: ""
+  transmit_enabled: true
+
+network:
+  network_id: "ericmesh-malaysia-test"
+  network_password: "change-this-password"
+  allow_broadcast: true
+  master_id: "master-001"
+  slave_id: "slave-001"
+
+runtime:
+  heartbeat_interval_seconds: 60
+  ping_interval_seconds: 10
+  ack_timeout_seconds: 25
+  test_message_count: 5
+  max_payload_chars: 160
+  discovery_timeout_seconds: 30
+  compatibility_timeout_seconds: 30
+  allow_fast_ping_interval: false
+
+telegram:
+  enabled: false
+  bot_token: ""
+  allowed_chat_id: ""

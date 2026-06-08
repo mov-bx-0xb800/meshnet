@@ -1,0 +1,6 @@
+meshtastic[cli]>=2.7.0
+PyYAML>=6.0
+pyserial>=3.5
+pypubsub>=4.0.3
+python-dotenv>=1.0
+python-telegram-bot>=21.0,<23.0
