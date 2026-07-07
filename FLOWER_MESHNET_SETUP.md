@@ -192,12 +192,60 @@ sudo systemctl enable --now meshnet-flower-bridge.service
 sudo systemctl enable --now tasik-flower-client.service
 ```
 
-Inspect logs with:
+### Automatic behavior
+
+`systemctl enable` registers a service to start automatically after every boot. The `--now` option also starts it immediately instead of waiting for the next reboot.
+
+All three units use `Restart=on-failure`:
+
+- Meshnet bridge restarts five seconds after a crash or non-zero exit.
+- Tasik Flower server restarts ten seconds after a crash or non-zero exit.
+- Tasik Flower client restarts fifteen seconds after a crash or non-zero exit.
+- A normal zero-exit completion is not restarted. After the configured Flower rounds finish normally, systemd does not immediately start another training run.
+- These units detect process exits, not a process that remains alive but hangs. Field monitoring still needs timeout and health checks.
+
+The client unit starts after and requires the local Meshnet bridge. The central Flower and Meshnet services restart independently.
+
+### Common service commands
+
+Set `SERVICE` to the unit being managed:
 
 ```bash
-journalctl -u meshnet-flower-bridge.service -f
-journalctl -u tasik-flower-server.service -f
-journalctl -u tasik-flower-client.service -f
+SERVICE=meshnet-flower-bridge.service
+# Or: tasik-flower-server.service / tasik-flower-client.service
+
+# Start now and automatically after future boots
+sudo systemctl enable --now "$SERVICE"
+
+# Show current state and the latest messages
+systemctl status "$SERVICE" --no-pager
+
+# Follow timestamped logs
+journalctl -u "$SERVICE" -f -o short-iso-precise
+
+# Restart after a configuration or code change
+sudo systemctl restart "$SERVICE"
+
+# Stop until manually started or the next boot if still enabled
+sudo systemctl stop "$SERVICE"
+
+# Stop now and disable automatic boot startup
+sudo systemctl disable --now "$SERVICE"
+```
+
+After editing or replacing a `.service` file, reload systemd before restarting it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart meshnet-flower-bridge.service
+```
+
+Inspect the three deployment logs directly with:
+
+```bash
+journalctl -u meshnet-flower-bridge.service -f -o short-iso-precise
+journalctl -u tasik-flower-server.service -f -o short-iso-precise
+journalctl -u tasik-flower-client.service -f -o short-iso-precise
 ```
 
 ## 7. Acceptance test
