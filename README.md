@@ -14,7 +14,13 @@ MeshNet is a Python runtime for a private Meshtastic application network:
 
 This project does not write raw LoRa packets and does not modify RAK firmware. It uses the official Meshtastic Python package, its `SerialInterface`, and the `meshtastic` CLI.
 
-For the three-node Tasik Chini Flower deployment, start with [FLOWER_BRIDGE.md](FLOWER_BRIDGE.md). The Flower bridge is a separate runtime and must not run alongside the normal master/slave or Telegram runtime on the same USB radio.
+For the three-node Tasik Chini Flower deployment:
+
+- [FLOWER_MESHNET_SYSTEM.md](FLOWER_MESHNET_SYSTEM.md) explains the two-process architecture.
+- [FLOWER_MESHNET_SETUP.md](FLOWER_MESHNET_SETUP.md) provides the deployment and startup procedure.
+- [FLOWER_BRIDGE.md](FLOWER_BRIDGE.md) is the deeper radio protocol and acceptance-test reference.
+
+The Flower bridge is a separate runtime and must not run alongside the normal master/slave or Telegram runtime on the same USB radio.
 
 ## Why Python
 
