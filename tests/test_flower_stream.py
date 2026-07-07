@@ -239,12 +239,15 @@ class FlowerBridgeIntegrationTests(unittest.TestCase):
             app.settimeout(15)
             app.sendall(payload)
             received = receive_exact(app, len(payload))
+            app.shutdown(socket.SHUT_WR)
+            self.assertEqual(app.recv(1), b"")
 
         self.assertEqual(received, payload)
         self.assertGreaterEqual(client.metrics.data_bytes_sent, len(payload))
         self.assertGreaterEqual(central.metrics.data_bytes_sent, len(payload))
         self.assertEqual(client.metrics.retransmitted_frames, 0)
         self.assertEqual(central.metrics.retransmitted_frames, 0)
+        wait_for_condition(lambda: not client._connections and not central._connections)
 
     def test_client_start_fails_loudly_when_local_flower_port_is_occupied(self) -> None:
         occupied_port = free_port()
@@ -455,6 +458,15 @@ def wait_for_port(port: int, timeout: float = 3.0) -> None:
         except OSError:
             time.sleep(0.02)
     raise TimeoutError(f"port {port} did not open")
+
+
+def wait_for_condition(condition: Callable[[], bool], timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return
+        time.sleep(0.02)
+    raise TimeoutError("condition was not reached")
 
 
 def run_echo_server(port: int, stop: threading.Event) -> None:

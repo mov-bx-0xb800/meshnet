@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import threading
 import unittest
+from collections import OrderedDict
+from dataclasses import replace
 from unittest.mock import Mock, patch
 
 from meshnet_api import MeshNetClient
-from src.config import channel_psk_for_cli, load_config
+from src.config import PeerConfig, channel_psk_for_cli, load_config
 from src.errors import MeshNetError
 from src.master import MasterNode
 from src.node import MeshNode
 from src.protocol import make_message
 from src.radio import RadioClient, radio_config_mismatches, setup_radio_reliably
 from src.slave import run_slave
+from src.state import SEEN_TTL_SECONDS
 
 
 class ReliabilityTests(unittest.TestCase):
@@ -107,6 +111,45 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(radio.interface.sendData.call_args.args[0], b"\xff\x00\x80")
         binary_handler.assert_called_once()
         text_handler.assert_not_called()
+
+    def test_configured_peer_mesh_id_is_used_before_discovery_state(self) -> None:
+        node = object.__new__(MeshNode)
+        node.cfg = replace(
+            self.cfg,
+            network=replace(
+                self.cfg.network,
+                peers=(PeerConfig("slave-001", "!a1b2c3d4"),),
+            ),
+        )
+        node.state = Mock()
+
+        destination = MeshNode.radio_destination_for(node, "slave-001")
+
+        self.assertEqual(destination, "!a1b2c3d4")
+        node.state.get_mesh_id.assert_not_called()
+
+    def test_response_cache_has_size_limit_and_ttl(self) -> None:
+        node = object.__new__(MeshNode)
+        node._response_cache = OrderedDict()
+        node._response_cache_lock = threading.Lock()
+        responses = [
+            make_message(self.cfg, "text_ack", dst="slave-001", body=f"reply-{index}")
+            for index in range(3)
+        ]
+
+        with (
+            patch("src.node.MAX_RESPONSE_CACHE_ENTRIES", 2),
+            patch("src.node.time.monotonic", side_effect=[100.0, 101.0, 102.0]),
+        ):
+            for index, response in enumerate(responses):
+                node._cache_response("slave-001", f"request-{index}", response)
+
+        self.assertEqual(len(node._response_cache), 2)
+        self.assertNotIn(("slave-001", "request-0"), node._response_cache)
+        with patch("src.node.time.monotonic", return_value=102.0 + SEEN_TTL_SECONDS + 1):
+            cached = node._cached_response("slave-001", "request-2")
+        self.assertIsNone(cached)
+        self.assertFalse(node._response_cache)
 
     @patch("src.node.time.sleep", return_value=None)
     def test_delivery_timeout_contains_helpful_error(self, _sleep: Mock) -> None:
