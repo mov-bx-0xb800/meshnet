@@ -100,15 +100,15 @@ def run_tests(cfg: MeshConfig) -> bool:
         for seq in range(1, sent + 1):
             payload = f"test-message-{seq}"
             body = {"payload": payload, "hash": payload_hash(payload)}
-            node.send("test", dst=cfg.network.slave_id, body=body, seq=seq)
-            reply = node.wait_for_message(
-                "test_ack",
-                src=cfg.network.slave_id,
+            result = node.send_reliable(
+                "test",
+                dst=cfg.network.slave_id,
+                body=body,
                 seq=seq,
-                timeout_seconds=cfg.runtime.ack_timeout_seconds,
+                expect_reply_type="test_ack",
             )
-            if reply is not None and isinstance(reply.envelope.body, dict):
-                if reply.envelope.body.get("ok"):
+            if result.reply is not None and isinstance(result.reply.envelope.body, dict):
+                if result.reply.envelope.body.get("ok"):
                     acked += 1
             time.sleep(5)
         missing = sent - acked

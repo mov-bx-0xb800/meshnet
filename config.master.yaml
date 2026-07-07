@@ -8,13 +8,24 @@ app:
 radio:
   port: "auto"
   region: "MY_919"
-  modem_preset: "LONG_FAST"
-  hop_limit: 3
+  modem_preset: "SHORT_FAST"
+  hop_limit: 1
+  frequency_slot: 8
+  tx_power: 23
+  ignore_mqtt: true
+  ok_to_mqtt: false
   channel_index: 0
   channel_name: "ERICMESH"
   channel_psk_mode: "derived"
   channel_psk_base64: ""
   transmit_enabled: true
+
+device:
+  role: "CLIENT_MUTE"
+  rebroadcast_mode: "LOCAL_ONLY"
+  node_info_broadcast_secs: 3600
+  is_power_saving: false
+  serial_enabled: true
 
 network:
   network_id: "ericmesh-malaysia-test"
@@ -27,13 +38,38 @@ runtime:
   heartbeat_interval_seconds: 60
   ping_interval_seconds: 10
   ack_timeout_seconds: 25
+  radio_ack_timeout_seconds: 15
+  send_retries: 3
+  setup_retries: 3
+  connect_retries: 3
+  discovery_retries: 3
+  retry_backoff_seconds: 5
+  runtime_reconnect: true
+  reconnect_delay_seconds: 5
+  max_reconnect_attempts: 0
   test_message_count: 5
-  max_payload_chars: 160
+  max_payload_chars: 60
   discovery_timeout_seconds: 30
   compatibility_timeout_seconds: 30
   allow_fast_ping_interval: false
 
 telegram:
-  enabled: false
+  enabled: true
   bot_token: ""
   allowed_chat_id: ""
+
+bridge:
+  enabled: false
+  listen_host: "127.0.0.1"
+  listen_port: 8081
+  upstream_host: "127.0.0.1"
+  upstream_port: 8081
+  payload_bytes: 192
+  window_size: 8
+  ack_timeout_seconds: 5
+  control_timeout_seconds: 10
+  max_retries: 8
+  frame_interval_ms: 210
+  poll_interval_ms: 500
+  max_buffer_bytes: 65536
+  metrics_interval_seconds: 60

@@ -4,6 +4,7 @@
 Description=MeshNet Meshtastic Runtime
 Wants=network-online.target
 After=network-online.target
+Conflicts=meshnet-telegram.service
 
 [Service]
 Type=simple

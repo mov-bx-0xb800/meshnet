@@ -1,0 +1,21 @@
+# Copy to /etc/systemd/system/meshnet-flower-bridge.service and edit User,
+# WorkingDirectory, ExecStart, and the config filename for this Pi.
+[Unit]
+Description=MeshNet Flower over Meshtastic Bridge
+After=local-fs.target
+Conflicts=meshnet.service meshnet-telegram.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/meshnet
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/pi/meshnet/.venv/bin/python -m src.cli bridge --config /home/pi/meshnet/config.flower.yaml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from dotenv import load_dotenv
 
 from . import logger
 from .config import MeshConfig
+from .errors import MeshNetError
 from .master import MasterNode
 from .protocol import Envelope, decode_envelope, payload_hash, verify_envelope
 
@@ -46,6 +48,7 @@ class TelegramBridge:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.stats = BridgeStats()
         self._stats_lock = threading.Lock()
+        self._mesh_lock = threading.RLock()
         self.events_enabled = True
 
     async def start(self) -> None:
@@ -57,8 +60,8 @@ class TelegramBridge:
                 "python-telegram-bot is not installed. Run ./install.sh first."
             ) from exc
 
-        if not self.cfg.telegram.enabled:
-            raise RuntimeError("telegram.enabled is false. Set TELEGRAM_ENABLED=true or enable it in config.")
+        if self.cfg.app.role != "master":
+            raise RuntimeError("Telegram bridge only runs with the master config.")
         if not self.cfg.telegram.bot_token:
             raise RuntimeError("telegram.bot_token is required. Set TELEGRAM_BOT_TOKEN in .env.")
         if not self.cfg.telegram.allowed_chat_id:
@@ -66,13 +69,18 @@ class TelegramBridge:
                 "telegram.allowed_chat_id is required. Send the bot a message, then run: meshnet telegram-id"
             )
 
-        logger.line("tg", "Telegram bridge enabled.")
-        logger.line("tg", "Connecting bot...")
+        logger.line("tg", "Telegram bridge configured.")
+        logger.line("tg", "Connecting radio...")
         self.loop = asyncio.get_running_loop()
         self.node.connect()
         self.node.radio.add_handler(self._on_mesh_packet)
 
-        self.app = ApplicationBuilder().token(self.cfg.telegram.bot_token).build()
+        logger.line("tg", "Connecting bot...")
+        try:
+            self.app = ApplicationBuilder().token(self.cfg.telegram.bot_token).build()
+        except Exception:
+            self.node.close()
+            raise
 
         async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if not self._allowed(update):
@@ -118,7 +126,10 @@ class TelegramBridge:
             await self._reply(update, "Starting discovery.")
             with self._stats_lock:
                 self.stats.discoveries += 1
-            found = await asyncio.to_thread(self.node.discover, self.cfg.runtime.discovery_timeout_seconds)
+            found = await asyncio.to_thread(
+                self._discover_compatible,
+                self.cfg.runtime.discovery_timeout_seconds,
+            )
             with self._stats_lock:
                 self.stats.compatible_nodes = len(found)
             if found:
@@ -132,7 +143,7 @@ class TelegramBridge:
                 return
             with self._stats_lock:
                 self.stats.pings_sent += 1
-            ok, rtt, _ = await asyncio.to_thread(self.node.ping_once, self.cfg.network.slave_id)
+            ok, rtt, _ = await asyncio.to_thread(self._ping_peer)
             with self._stats_lock:
                 if ok and rtt is not None:
                     self.stats.pings_ok += 1
@@ -195,26 +206,146 @@ class TelegramBridge:
         self.app.add_handler(CommandHandler("send", send_cmd))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_msg))
 
-        logger.line("tg", "Connected.")
         logger.line("tg", f"Allowed chat ID: {self.cfg.telegram.allowed_chat_id}")
-        logger.line("tg", "Ready.")
-        await self.app.initialize()
-        await self.app.start()
-        await self.app.updater.start_polling()
+        app_initialized = False
+        app_started = False
+        polling_started = False
+        monitor_task: asyncio.Task[None] | None = None
         try:
+            await self.app.initialize()
+            app_initialized = True
+            await self.app.start()
+            app_started = True
+            if self.app.updater is None:
+                raise RuntimeError("Telegram updater is unavailable.")
+            await self.app.updater.start_polling()
+            polling_started = True
+            logger.line("tg", "Bot polling started.")
+            logger.line("tg", "Ready.")
+            monitor_task = asyncio.create_task(self._master_monitor())
             await self._notify("MeshNet Telegram bridge started.")
             while True:
                 await asyncio.sleep(3600)
         finally:
-            await self.app.updater.stop()
-            await self.app.stop()
-            await self.app.shutdown()
+            if monitor_task is not None:
+                monitor_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await monitor_task
+            if self.app is not None:
+                if polling_started and self.app.updater is not None:
+                    with contextlib.suppress(Exception):
+                        await self.app.updater.stop()
+                if app_started:
+                    with contextlib.suppress(Exception):
+                        await self.app.stop()
+                if app_initialized:
+                    with contextlib.suppress(Exception):
+                        await self.app.shutdown()
             self.node.close()
+
+    async def _master_monitor(self) -> None:
+        logger.line("master", f"Looking for slave: {self.cfg.network.slave_id}")
+        with self._stats_lock:
+            self.stats.discoveries += 1
+        compatible = await asyncio.to_thread(
+            self._discover_compatible,
+            self.cfg.runtime.discovery_timeout_seconds,
+        )
+        with self._stats_lock:
+            self.stats.compatible_nodes = len(compatible)
+        if compatible:
+            logger.line("master", f"TRUE NODE found: {self.cfg.network.slave_id}")
+        else:
+            logger.line("master", "No compatible slave found yet; continuing runtime checks.")
+
+        seq = 0
+        next_heartbeat = time.monotonic()
+        while True:
+            try:
+                if time.monotonic() >= next_heartbeat:
+                    await asyncio.to_thread(self._send_heartbeat)
+                    logger.line("master", "Heartbeat broadcast sent.")
+                    next_heartbeat = time.monotonic() + self.cfg.runtime.heartbeat_interval_seconds
+
+                seq += 1
+                logger.line("master", f"Ping -> {self.cfg.network.slave_id} seq={seq}")
+                with self._stats_lock:
+                    self.stats.pings_sent += 1
+                ok, rtt, _ = await asyncio.to_thread(self._ping_peer, seq)
+                with self._stats_lock:
+                    if ok and rtt is not None:
+                        self.stats.pings_ok += 1
+                        self.stats.last_ping_rtt = rtt
+                    else:
+                        self.stats.pings_timeout += 1
+                if ok and rtt is not None:
+                    logger.line(
+                        "master",
+                        f"Pong <- {self.cfg.network.slave_id} seq={seq} rtt={rtt:.1f}s",
+                    )
+                else:
+                    logger.line("master", f"Pong timeout from {self.cfg.network.slave_id} seq={seq}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                with self._stats_lock:
+                    self.stats.last_error = str(exc)
+                logger.line("master", f"Runtime check failed: {exc}")
+
+            await asyncio.sleep(self.cfg.safe_ping_interval)
+
+    def _discover_compatible(self, timeout_seconds: int) -> list[Envelope]:
+        with self._mesh_lock:
+            self._ensure_radio_connected_locked()
+            return self.node.discover(timeout_seconds)
+
+    def _ping_peer(self, seq: int | None = None) -> tuple[bool, float | None, Envelope]:
+        with self._mesh_lock:
+            self._ensure_radio_connected_locked()
+            return self.node.ping_once(self.cfg.network.slave_id, seq=seq)
+
+    def _send_heartbeat(self) -> Envelope:
+        with self._mesh_lock:
+            self._ensure_radio_connected_locked()
+            return self.node.send("heartbeat", dst="broadcast", body={"role": "master"}, seq=0)
+
+    def _send_mesh_text_sync(self, text: str) -> Envelope:
+        with self._mesh_lock:
+            self._ensure_radio_connected_locked()
+            result = self.node.send_text_message(text, self.cfg.network.slave_id)
+            if not result.ok:
+                raise MeshNetError(
+                    result.error_code or "DELIVERY_FAILED",
+                    "delivery",
+                    result.last_error or "message delivery failed",
+                    result.action or "Check the peer runtime and matching radio configuration.",
+                    retryable=result.retryable,
+                    attempts=result.attempts,
+                )
+            return result.envelope
+
+    def _ensure_radio_connected_locked(self) -> None:
+        if self.node.radio.is_connected():
+            return
+        logger.line("tg", "Radio offline; starting reconnect.")
+        self.node.close()
+        node = MasterNode(self.cfg, "tg")
+        try:
+            node.connect()
+        except Exception:
+            node.close()
+            raise
+        node.radio.add_handler(self._on_mesh_packet)
+        self.node = node
+        logger.line("tg", "Radio reconnected.")
 
     def _allowed(self, update: Any) -> bool:
         chat = getattr(update, "effective_chat", None)
         chat_id = str(getattr(chat, "id", ""))
-        return chat_id == str(self.cfg.telegram.allowed_chat_id)
+        allowed = chat_id == str(self.cfg.telegram.allowed_chat_id)
+        if not allowed:
+            logger.line("tg", f"Ignored Telegram message from unauthorized chat: {chat_id or 'unknown'}")
+        return allowed
 
     async def _reply(self, update: Any, text: str) -> None:
         message = getattr(update, "message", None) or getattr(update, "effective_message", None)
@@ -242,10 +373,17 @@ class TelegramBridge:
             self.stats.last_tg_in_at = time.time()
         try:
             envelope = await asyncio.to_thread(
-                self.node.send_text_message,
+                self._send_mesh_text_sync,
                 text,
-                self.cfg.network.slave_id,
             )
+        except MeshNetError as exc:
+            with self._stats_lock:
+                self.stats.last_error = f"{exc.code}: {exc.message}"
+            await self._reply(
+                update,
+                f"Mesh send failed [{exc.code}]\nProblem: {exc.message}\nFix: {exc.action}",
+            )
+            return
         except Exception as exc:
             with self._stats_lock:
                 self.stats.last_error = str(exc)
@@ -286,6 +424,11 @@ class TelegramBridge:
         return ""
 
     def _run_quick_test(self) -> tuple[bool, list[str]]:
+        with self._mesh_lock:
+            self._ensure_radio_connected_locked()
+            return self._run_quick_test_locked()
+
+    def _run_quick_test_locked(self) -> tuple[bool, list[str]]:
         lines: list[str] = []
         passed = True
 
@@ -315,25 +458,20 @@ class TelegramBridge:
 
         seq = self.node.next_seq()
         payload = f"telegram-test-{seq}"
-        envelope = self.node.send(
+        result = self.node.send_reliable(
             "test",
             dst=self.cfg.network.slave_id,
             body={"payload": payload, "hash": payload_hash(payload)},
             seq=seq,
+            expect_reply_type="test_ack",
         )
         with self._stats_lock:
             self.stats.mesh_messages_out += 1
             self.stats.last_mesh_out_at = time.time()
-        reply = self.node.wait_for_message(
-            "test_ack",
-            src=self.cfg.network.slave_id,
-            seq=envelope.seq,
-            timeout_seconds=self.cfg.runtime.ack_timeout_seconds,
-        )
         ack_ok = bool(
-            reply is not None
-            and isinstance(reply.envelope.body, dict)
-            and reply.envelope.body.get("ok")
+            result.reply is not None
+            and isinstance(result.reply.envelope.body, dict)
+            and result.reply.envelope.body.get("ok")
         )
         if ack_ok:
             lines.append("PASS test payload: ack received")

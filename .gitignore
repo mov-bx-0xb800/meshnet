@@ -9,6 +9,11 @@ __pycache__/
 
 .env
 *.log
+config.flower.yaml
+*.state.sqlite
+*.state.sqlite-shm
+*.state.sqlite-wal
+*.bridge-metrics.json
 
 .DS_Store
 

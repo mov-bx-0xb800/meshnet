@@ -1,0 +1,40 @@
+# Reliability Changes
+
+- Added SQLite state file per config.
+- Added node registry.
+- Added trusted `app_id -> mesh_id` binding.
+- Added replay/duplicate message cache.
+- Added outbound delivery status history.
+- Switched app traffic to Meshtastic `PRIVATE_APP`.
+- Added compact protocol v2 fields.
+- Added `ack_for` reply correlation.
+- Added retry attempt tracking.
+- Added real direct radio destinations after discovery.
+- Kept broadcast only for discovery/fallback.
+- Added radio ACK/NAK tracking for direct sends.
+- Added app-level ACK retries.
+- Added `text_ack`.
+- Added duplicate request cached-response resend.
+- Added per-serial-port process lock.
+- Added identity-change detection.
+- Added config fingerprint in hello/status data.
+- Added HMAC key derivation separate from PSK derivation.
+- Added reliable ping/send/test paths.
+- Added importable `meshnet_api` package.
+- Added `MeshNetClient` one-shot API.
+- Added `MeshNetSession` long-lived API.
+- Added `LIBRARY_API.md`.
+- Added doctor radio/config comparison.
+- Added Meshtastic `device.role` config.
+- Added Meshtastic `device.rebroadcast_mode` config.
+- Added `device.node_info_broadcast_secs` config.
+- Added `device.is_power_saving` config.
+- Added `device.serial_enabled` config.
+- Defaulted master/slave firmware role to `CLIENT`.
+- Defaulted rebroadcast mode to `LOCAL_ONLY`.
+- Added setup retries and post-setup radio verification.
+- Added connection and discovery retries.
+- Added master/slave/Telegram USB reconnect handling.
+- Added structured error codes, problems, and corrective actions.
+- Added structured setup, discovery, and delivery failures to the package API.
+- Lowered default text payload limit to `60`.
