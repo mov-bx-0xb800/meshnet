@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,10 +11,11 @@ from .config import MeshConfig
 from .errors import MeshNetError, as_meshnet_error, log_meshnet_error
 from .protocol import Envelope, decode_envelope, encode_envelope, make_message, verify_envelope
 from .radio import BROADCAST_ADDR, RadioClient, packet_from_mesh_id, packet_to_mesh_id
-from .state import StateStore, config_fingerprint
+from .state import SEEN_TTL_SECONDS, StateStore, config_fingerprint
 
 
 MAX_ACCEPTED_MESSAGES = 200
+MAX_RESPONSE_CACHE_ENTRIES = 4096
 
 
 @dataclass(frozen=True)
@@ -45,7 +47,10 @@ class MeshNode:
         self._condition = threading.Condition()
         self._seq = 0
         self._running = False
-        self._response_cache: dict[tuple[str, str], Envelope] = {}
+        self._response_cache: OrderedDict[
+            tuple[str, str], tuple[float, Envelope]
+        ] = OrderedDict()
+        self._response_cache_lock = threading.Lock()
         self._last_transport_error = ""
         self._last_transport_code = ""
         self._last_transport_action = ""
@@ -198,7 +203,7 @@ class MeshNode:
             want_ack=want_ack,
             ack_for=request.id,
         )
-        self._response_cache[(request.src, request.id)] = response
+        self._cache_response(request.src, request.id, response)
         return response
 
     def send_reliable(
@@ -321,6 +326,9 @@ class MeshNode:
             return BROADCAST_ADDR
         if dst.startswith("!"):
             return dst
+        configured_mesh_id = self.cfg.mesh_id_for(dst)
+        if configured_mesh_id and configured_mesh_id != "unknown":
+            return configured_mesh_id
         mesh_id = self.state.get_mesh_id(dst)
         if mesh_id and mesh_id != "unknown":
             return mesh_id
@@ -403,7 +411,7 @@ class MeshNode:
         return True
 
     def _resend_cached_response(self, envelope: Envelope) -> None:
-        cached = self._response_cache.get((envelope.src, envelope.id))
+        cached = self._cached_response(envelope.src, envelope.id)
         if cached is None:
             return
         logger.line(self.scope, f"Duplicate {envelope.t} from {envelope.src}; resending cached {cached.t}.")
@@ -416,6 +424,34 @@ class MeshNode:
             message_id=cached.id,
             ack_for=cached.ack_for,
         )
+
+    def _cache_response(self, src: str, request_id: str, response: Envelope) -> None:
+        now = time.monotonic()
+        key = (src, request_id)
+        with self._response_cache_lock:
+            self._prune_response_cache_locked(now)
+            self._response_cache[key] = (now, response)
+            self._response_cache.move_to_end(key)
+            while len(self._response_cache) > MAX_RESPONSE_CACHE_ENTRIES:
+                self._response_cache.popitem(last=False)
+
+    def _cached_response(self, src: str, request_id: str) -> Envelope | None:
+        now = time.monotonic()
+        key = (src, request_id)
+        with self._response_cache_lock:
+            self._prune_response_cache_locked(now)
+            cached = self._response_cache.get(key)
+            if cached is None:
+                return None
+            return cached[1]
+
+    def _prune_response_cache_locked(self, now: float) -> None:
+        cutoff = now - SEEN_TTL_SECONDS
+        while self._response_cache:
+            _key, (created_at, _response) = next(iter(self._response_cache.items()))
+            if created_at >= cutoff:
+                return
+            self._response_cache.popitem(last=False)
 
     def handle_message(self, envelope: Envelope, packet: dict[str, Any]) -> None:
         pass

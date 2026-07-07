@@ -109,6 +109,9 @@ class BridgeConnection:
         self.closed = threading.Event()
         self.local_eof = threading.Event()
         self.remote_eof = threading.Event()
+        self.local_half_close_sent = threading.Event()
+        self._completion_lock = threading.Lock()
+        self._completion_started = False
         self.next_poll_sequence = 1
         self.expected_poll_sequence = 0
         self.last_poll_sequence = 0
@@ -168,6 +171,19 @@ class BridgeConnection:
             return
         self.remote_eof.set()
         self._rx_queue.put(None)
+
+    def begin_completed_close(self) -> bool:
+        """Claim teardown once both TCP directions have completed."""
+        with self._completion_lock:
+            if (
+                self._completion_started
+                or self.closed.is_set()
+                or not self.local_half_close_sent.is_set()
+                or not self.remote_eof.is_set()
+            ):
+                return False
+            self._completion_started = True
+            return True
 
     def _queue_incoming(self, payload: bytes) -> None:
         while not self.closed.is_set():
@@ -381,6 +397,7 @@ class FlowerBridge:
             connection = self._connection_for(peer_id, frame.session_id)
             if connection is not None:
                 connection.mark_remote_eof()
+                self._complete_half_closed_connection(connection)
         elif frame.frame_type in {FrameType.CLOSE, FrameType.RESET}:
             connection = self._connection_for(peer_id, frame.session_id)
             if connection is not None:
@@ -563,13 +580,40 @@ class FlowerBridge:
                 else:
                     time.sleep(0.5)
             if not connection.closed.is_set():
-                self._send_control(connection.peer_id, FrameType.HALF_CLOSE, connection.session_id)
+                try:
+                    self._send_control(
+                        connection.peer_id,
+                        FrameType.HALF_CLOSE,
+                        connection.session_id,
+                    )
+                    connection.local_half_close_sent.set()
+                    self._complete_half_closed_connection(connection)
+                except Exception as exc:
+                    self._connection_error(connection, exc)
 
         threading.Thread(
             target=flush_and_close_write,
             name=f"bridge-half-close-{connection.session_id}",
             daemon=True,
         ).start()
+
+    def _complete_half_closed_connection(self, connection: BridgeConnection) -> None:
+        if not connection.begin_completed_close():
+            return
+        try:
+            self._send_control(
+                connection.peer_id,
+                FrameType.CLOSE,
+                connection.session_id,
+                repeat=2,
+            )
+        except Exception as exc:
+            logger.line(
+                "bridge",
+                f"Could not confirm close for session {connection.session_id}: {exc}",
+            )
+        finally:
+            self._remove_connection(connection)
 
     def _connection_error(self, connection: BridgeConnection, exc: Exception) -> None:
         if connection.closed.is_set():
