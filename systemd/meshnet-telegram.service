@@ -1,16 +1,18 @@
+# Legacy compatibility service. Prefer meshnet.service and do not enable both.
 # Copy to /etc/systemd/system/meshnet-telegram.service and edit User,
 # WorkingDirectory, ExecStart path, and config path for the master Pi.
 [Unit]
-Description=MeshNet Telegram Bridge
+Description=MeshNet Unified Runtime (legacy Telegram alias)
 Wants=network-online.target
 After=network-online.target
+Conflicts=meshnet.service
 
 [Service]
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/meshnet
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/pi/meshnet/.venv/bin/python -m src.cli telegram --config /home/pi/meshnet/config.master.yaml
+ExecStart=/home/pi/meshnet/.venv/bin/python -m src.cli run --config /home/pi/meshnet/config.master.yaml
 Restart=on-failure
 RestartSec=10
 

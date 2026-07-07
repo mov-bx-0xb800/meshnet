@@ -5,13 +5,15 @@ from typing import Any
 
 from . import logger
 from .config import MeshConfig
-from .node import MeshNode, mesh_node_info
+from .errors import MeshNetError, as_meshnet_error, log_meshnet_error
+from .node import DeliveryResult, MeshNode, mesh_node_info
 from .protocol import Envelope
 
 
 class MasterNode(MeshNode):
     def __init__(self, cfg: MeshConfig, scope: str = "master") -> None:
         super().__init__(cfg, scope)
+        self.last_discovery_attempts = 0
 
     def handle_message(self, envelope: Envelope, packet: dict[str, Any]) -> None:
         if envelope.t == "pong":
@@ -20,15 +22,57 @@ class MasterNode(MeshNode):
             return
         if envelope.t == "test_ack":
             return
+        if envelope.t == "text_ack":
+            return
         if envelope.t == "text":
             logger.line("master", f"Text <- {envelope.src}: {envelope.body}")
+            self.reply(
+                envelope,
+                "text_ack",
+                body={"ok": True, "rid": envelope.id},
+                seq=envelope.seq,
+            )
         elif envelope.t == "status_res":
             logger.line("master", f"Status <- {envelope.src}: {envelope.body}")
 
     def discover(self, timeout_seconds: int | None = None) -> list[Envelope]:
         timeout = timeout_seconds or self.cfg.runtime.discovery_timeout_seconds
+        for attempt in range(1, self.cfg.runtime.discovery_retries + 1):
+            self.last_discovery_attempts = attempt
+            logger.line(
+                "network",
+                f"Discovery attempt {attempt}/{self.cfg.runtime.discovery_retries}.",
+            )
+            compatible = self._discover_once(timeout)
+            if compatible:
+                logger.blank()
+                logger.line("network", f"Reached {len(compatible)} compatible node.")
+                return compatible
+            if attempt < self.cfg.runtime.discovery_retries:
+                logger.line(
+                    "network",
+                    f"No compatible node; retrying in "
+                    f"{self.cfg.runtime.retry_backoff_seconds} seconds.",
+                )
+                time.sleep(self.cfg.runtime.retry_backoff_seconds)
+
+        error = MeshNetError(
+            "DISCOVERY_TIMEOUT",
+            "discovery",
+            f"no compatible node replied after {self.last_discovery_attempts} attempt(s)",
+            "Start the peer runtime and check matching region, channel, PSK, "
+            "network ID, and antennas.",
+            retryable=True,
+            attempts=self.last_discovery_attempts,
+            details={"expected_peer": self.cfg.peer_node_id},
+        )
+        log_meshnet_error(error, "network")
+        print_no_node_help(timeout)
+        return []
+
+    def _discover_once(self, timeout: int) -> list[Envelope]:
         logger.line("network", "Reaching out to any node...")
-        self.send("hello", dst="broadcast", body=mesh_node_info(self), seq=0)
+        hello = self.send("hello", dst="broadcast", body=mesh_node_info(self), seq=0)
         logger.line("network", "Broadcast hello sent.")
         logger.line("network", f"Listening for replies for {timeout} seconds...")
         found: list[Envelope] = []
@@ -36,7 +80,11 @@ class MasterNode(MeshNode):
         seen: set[str] = set()
         while time.monotonic() < end:
             remaining = max(1, int(end - time.monotonic()))
-            msg = self.wait_for_message("hello_ack", timeout_seconds=min(2, remaining))
+            msg = self.wait_for_message(
+                "hello_ack",
+                ack_for=hello.id,
+                timeout_seconds=min(2, remaining),
+            )
             if msg is None:
                 continue
             env = msg.envelope
@@ -74,27 +122,22 @@ class MasterNode(MeshNode):
             and isinstance(env.body, dict)
             and env.body.get("role", env.body.get("r")) == "slave"
         ]
-        if compatible:
-            logger.blank()
-            logger.line("network", f"Reached {len(compatible)} compatible node.")
-        else:
-            print_no_node_help(timeout)
         return compatible
 
     def ping_once(self, target: str, seq: int | None = None) -> tuple[bool, float | None, Envelope]:
         if seq is None:
             seq = self.next_seq()
         sent_at = time.monotonic()
-        ping = self.send("ping", dst=target, seq=seq, body={"target": target})
-        reply = self.wait_for_message(
-            "pong",
-            src=target,
+        result = self.send_reliable(
+            "ping",
+            dst=target,
             seq=seq,
-            timeout_seconds=self.cfg.runtime.ack_timeout_seconds,
+            body={"target": target},
+            expect_reply_type="pong",
         )
-        if reply is None:
-            return False, None, ping
-        return True, time.monotonic() - sent_at, ping
+        if not result.ok:
+            return False, None, result.envelope
+        return True, time.monotonic() - sent_at, result.envelope
 
     def ping_loop(self, target: str | None = None) -> None:
         target = target or self.cfg.network.slave_id
@@ -109,15 +152,9 @@ class MasterNode(MeshNode):
             while True:
                 seq += 1
                 sent_at = time.monotonic()
-                ping = self.send("ping", dst=target, seq=seq, body={"target": target})
-                logger.line("ping", f"-> seq={seq} id={ping.id}")
-                reply = self.wait_for_message(
-                    "pong",
-                    src=target,
-                    seq=seq,
-                    timeout_seconds=self.cfg.runtime.ack_timeout_seconds,
-                )
-                if reply is None:
+                logger.line("ping", f"-> seq={seq}")
+                ok, _, ping = self.ping_once(target, seq=seq)
+                if not ok:
                     logger.line(
                         "ping",
                         f"timeout seq={seq} after {self.cfg.runtime.ack_timeout_seconds}s",
@@ -131,11 +168,23 @@ class MasterNode(MeshNode):
         except KeyboardInterrupt:
             logger.line("ping", "Stopped.")
 
-    def send_text_message(self, text: str, target: str | None = None) -> Envelope:
+    def send_text_message(self, text: str, target: str | None = None) -> DeliveryResult:
         target = target or self.cfg.network.slave_id
-        envelope = self.send("text", dst=target, body=text)
-        logger.line("mesh", f"Text sent to {target}: {text}")
-        return envelope
+        result = self.send_reliable(
+            "text",
+            dst=target,
+            body=text,
+            expect_reply_type="text_ack",
+        )
+        if result.ok:
+            logger.line("mesh", f"Text acknowledged by {target}: {text}")
+        else:
+            logger.line(
+                "mesh",
+                f"Text delivery failed [{result.error_code}] to {target}: {result.last_error}",
+            )
+            logger.detail(f"action: {result.action}", indent=8)
+        return result
 
 
 def print_no_node_help(timeout: int) -> None:
@@ -151,7 +200,35 @@ def print_no_node_help(timeout: int) -> None:
 
 
 def run_master(cfg: MeshConfig) -> None:
-    node = MasterNode(cfg, "master")
+    reconnects = 0
+    while True:
+        node = MasterNode(cfg, "master")
+        try:
+            _run_master_connected(node, cfg)
+            return
+        except KeyboardInterrupt:
+            logger.line("master", "Stopping.")
+            return
+        except Exception as exc:
+            reconnects += 1
+            error = as_meshnet_error(exc, "runtime", attempts=reconnects)
+            log_meshnet_error(error, "master")
+            if not error.retryable or not cfg.runtime.runtime_reconnect or (
+                cfg.runtime.max_reconnect_attempts > 0
+                and reconnects >= cfg.runtime.max_reconnect_attempts
+            ):
+                raise error from exc
+            logger.line(
+                "master",
+                f"Reconnecting in {cfg.runtime.reconnect_delay_seconds} seconds "
+                f"(cycle {reconnects}).",
+            )
+            time.sleep(cfg.runtime.reconnect_delay_seconds)
+        finally:
+            node.close()
+
+
+def _run_master_connected(node: MasterNode, cfg: MeshConfig) -> None:
     logger.line("master", "Starting Master Node...")
     logger.line("master", f"Config loaded: {cfg.path.name}")
     logger.line("master", f"Connecting to radio: {cfg.radio.port}")
@@ -165,23 +242,26 @@ def run_master(cfg: MeshConfig) -> None:
         logger.line("master", f"Found {len(compatible)} known node.")
         logger.line("master", f"TRUE NODE found: {cfg.network.slave_id}")
     logger.line("master", f"Starting ping/pong loop every {cfg.safe_ping_interval} seconds.")
-    try:
-        seq = 0
-        next_heartbeat = time.monotonic() + cfg.runtime.heartbeat_interval_seconds
-        while True:
-            if time.monotonic() >= next_heartbeat:
-                node.send("heartbeat", dst="broadcast", body={"role": "master"}, seq=0)
-                logger.line("master", "Heartbeat broadcast sent.")
-                next_heartbeat = time.monotonic() + cfg.runtime.heartbeat_interval_seconds
-            seq += 1
-            logger.line("master", f"Ping -> {cfg.network.slave_id} seq={seq}")
-            ok, rtt, _ = node.ping_once(cfg.network.slave_id, seq=seq)
-            if ok:
-                logger.line("master", f"Pong <- {cfg.network.slave_id} seq={seq} rtt={rtt:.1f}s")
-            else:
-                logger.line("master", f"Pong timeout from {cfg.network.slave_id} seq={seq}")
-            time.sleep(cfg.safe_ping_interval)
-    except KeyboardInterrupt:
-        logger.line("master", "Stopping.")
-    finally:
-        node.close()
+    seq = 0
+    next_heartbeat = time.monotonic() + cfg.runtime.heartbeat_interval_seconds
+    while True:
+        if not node.radio.is_connected():
+            raise MeshNetError(
+                "RADIO_DISCONNECTED",
+                "runtime",
+                "the Meshtastic USB connection was lost",
+                "Reconnect the USB radio; MeshNet will retry automatically.",
+                retryable=True,
+            )
+        if time.monotonic() >= next_heartbeat:
+            node.send("heartbeat", dst="broadcast", body={"role": "master"}, seq=0)
+            logger.line("master", "Heartbeat broadcast sent.")
+            next_heartbeat = time.monotonic() + cfg.runtime.heartbeat_interval_seconds
+        seq += 1
+        logger.line("master", f"Ping -> {cfg.network.slave_id} seq={seq}")
+        ok, rtt, _ = node.ping_once(cfg.network.slave_id, seq=seq)
+        if ok:
+            logger.line("master", f"Pong <- {cfg.network.slave_id} seq={seq} rtt={rtt:.1f}s")
+        else:
+            logger.line("master", f"Pong timeout from {cfg.network.slave_id} seq={seq}")
+        time.sleep(cfg.safe_ping_interval)

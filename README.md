@@ -1,17 +1,20 @@
-# MeshNet: Raspberry Pi + RAK Meshtastic Two-Node Test Network
+# MeshNet: Reliable Raspberry Pi + RAK Meshtastic Network
 
-MeshNet is a small Python app for a private two-node Meshtastic test network:
+MeshNet is a Python runtime for a private Meshtastic application network:
 
 - Raspberry Pi 4
 - RAK Meshtastic LoRa device over USB serial
 - Malaysia LoRa region
-- one master node and one slave node
+- one central node and one or more pinned client nodes
 - YAML config-driven radio setup and runtime
 - compact JSON messages with app-level HMAC-SHA256 validation
 - human-readable CLI output
-- optional Telegram bridge
+- optional Telegram control inside the master runtime
+- an authenticated, reliable binary byte-stream bridge for Flower/gRPC
 
 This project does not write raw LoRa packets and does not modify RAK firmware. It uses the official Meshtastic Python package, its `SerialInterface`, and the `meshtastic` CLI.
+
+For the three-node Tasik Chini Flower deployment, start with [FLOWER_BRIDGE.md](FLOWER_BRIDGE.md). The Flower bridge is a separate runtime and must not run alongside the normal master/slave or Telegram runtime on the same USB radio.
 
 ## Why Python
 
@@ -49,7 +52,7 @@ Use the same region on both radios:
 - `MY_919` for 919-924 MHz Malaysia hardware.
 - `MY_433` for 433-435 MHz hardware.
 
-Do not override legal frequency or duty-cycle settings. Keep the default `hop_limit: 3` unless you understand the mesh impact.
+Do not override legal frequency, EIRP, or duty-cycle settings. The direct Tasik Chini star uses `SHORT_FAST`, an explicit in-band frequency slot, `CLIENT_MUTE`, and `hop_limit: 1`; it does not use Meshtastic relays.
 
 ## Install
 
@@ -65,6 +68,7 @@ The installer creates `meshnet/.venv`, installs Python dependencies, and adds th
 After installation, use the `meshnet` command:
 
 ```bash
+meshnet how-to
 meshnet check master
 meshnet setup master
 meshnet master
@@ -89,6 +93,30 @@ network:
   network_id: "ericmesh-malaysia-test"
   network_password: "change-this-password"
 ```
+
+## Meshtastic Device Role
+
+MeshNet has its own `app.role` (`master` or `slave`). Meshtastic firmware also has a real device role under `device.role`.
+
+For Pi + USB serial MeshNet runtimes, keep both radios as:
+
+```yaml
+device:
+  role: "CLIENT"
+  rebroadcast_mode: "LOCAL_ONLY"
+  node_info_broadcast_secs: 3600
+  is_power_saving: false
+  serial_enabled: true
+```
+
+Recommended options:
+
+- `CLIENT`: default for master and slave; keeps serial/client access available.
+- `CLIENT_MUTE`: acceptable for a direct-range endpoint that should not relay other traffic.
+- `LOCAL_ONLY`: reduces rebroadcasting foreign/open mesh traffic while keeping this private channel useful.
+- `serial_enabled: true`: required because MeshNet controls the radio over USB serial.
+
+Avoid `ROUTER` or `REPEATER` for the master/slave runtime nodes. Those roles are for infrastructure devices, not USB-serial app endpoints.
 
 ## Configure Slave
 
@@ -147,12 +175,23 @@ meshnet setup slave
 meshnet master
 meshnet slave
 meshnet nodes
+meshnet registry
+meshnet status
+meshnet doctor
 meshnet send "hello"
 meshnet ping
 meshnet test
 meshnet telegram-id
-meshnet telegram
+meshnet how-to
 ```
+
+`meshnet master` is the normal master entry point. It starts Telegram automatically when the bot token and allowed chat ID are configured; otherwise it runs the normal master heartbeat/ping loop. `meshnet telegram` remains as a legacy alias for the same unified master runtime.
+
+Telegram mesh operations also reconnect the USB radio before retrying a command or background check.
+
+MeshNet keeps a small SQLite state file next to the active config, for example `config.master.state.sqlite`. This stores discovered app IDs, Meshtastic node IDs, recent outbound delivery state, and duplicate-message protection.
+
+For use from another Python project, see `LIBRARY_API.md`.
 
 The old Python module form still works for debugging, but normal use should go through `meshnet`.
 
@@ -169,9 +208,9 @@ scripts/send-test.sh config.master.yaml "hello"
 
 ## Preflight Gate
 
-MeshNet refuses to start radio-dependent commands unless the local machine looks like a real Meshtastic host.
+MeshNet gates one-shot radio commands with preflight checks. Long-running runtimes use reconnect loops instead of exiting on transient USB loss.
 
-Before `info`, `setup-radio`, `run`, `discover`, `ping`, `send`, `test`, or `telegram` proceeds, the CLI checks:
+Before one-shot radio commands such as `info`, `setup`, `discover`, `ping`, `send`, `test`, `doctor`, or `telegram` proceed, the CLI checks:
 
 - the Meshtastic Python package is installed
 - the `meshtastic` CLI is installed
@@ -195,7 +234,9 @@ Expected success:
 [preflight] Preflight passed. Proceeding.
 ```
 
-If the radio is missing, permissions are wrong, Meshtastic is not installed, or another client owns the serial port, MeshNet prints `BLOCKED - MeshNet will not start.` and exits before running the requested command.
+If the radio is missing, permissions are wrong, Meshtastic is not installed, or another client owns the serial port, MeshNet prints a coded problem and corrective action. Transient preflight failures retry according to `runtime.connect_retries`.
+
+Long-running `master` and `slave` processes connect with retries and keep retrying after USB disconnects when `runtime.runtime_reconnect` is enabled.
 
 ## Apply Radio Setup
 
@@ -208,7 +249,7 @@ meshnet setup master
 Expected final line:
 
 ```text
-[setup] Set up node: DONE.
+[setup] Set up node: DONE (1 attempt(s)).
 ```
 
 Run on the slave Pi:
@@ -220,7 +261,7 @@ meshnet setup slave
 Expected final line:
 
 ```text
-[setup] Set up node: DONE.
+[setup] Set up node: DONE (1 attempt(s)).
 ```
 
 ## Discover Nodes
@@ -244,6 +285,14 @@ Expected result:
 [compat] TRUE NODE: slave-001
 ```
 
+Discovery retries according to `runtime.discovery_retries`. It also binds the MeshNet app ID to the radio's Meshtastic node ID. After discovery, direct messages are sent to that specific Meshtastic destination instead of being broadcast to the whole mesh. If a known app ID appears with a different Meshtastic node ID, MeshNet marks it as an identity change and ignores it until you trust the new binding:
+
+```bash
+meshnet registry
+meshnet trust slave-001 '!12345678'
+meshnet unpair slave-001
+```
+
 ## Ping/Pong
 
 On the slave:
@@ -259,6 +308,41 @@ meshnet ping
 ```
 
 Default interval is 10 seconds. Values below 5 seconds are clamped to 5 seconds unless `runtime.allow_fast_ping_interval: true` is explicitly set.
+
+Pings use both Meshtastic radio ACKs when a direct destination is known and MeshNet application ACKs (`pong`) with message-ID correlation. If a reply times out, MeshNet retries according to:
+
+```yaml
+runtime:
+  radio_ack_timeout_seconds: 15
+  send_retries: 3
+  setup_retries: 3
+  connect_retries: 3
+  discovery_retries: 3
+  retry_backoff_seconds: 5
+  runtime_reconnect: true
+  reconnect_delay_seconds: 5
+  max_reconnect_attempts: 0
+```
+
+`max_reconnect_attempts: 0` means keep reconnecting until the radio returns or the process is stopped.
+
+When a direct radio destination is not known yet, MeshNet temporarily falls back to broadcast and learns the destination from the signed reply.
+
+## Status And Doctor
+
+Use `status` for a fast state summary:
+
+```bash
+meshnet status
+```
+
+Use `doctor` when checking a Pi/radio:
+
+```bash
+meshnet doctor
+```
+
+`doctor` runs preflight, prints the active config fingerprint, connects to the local radio, reports the local Meshtastic node ID, and lists known radio nodes. The fingerprint is also sent in MeshNet hello messages so mismatched channel/network/runtime settings are visible.
 
 ## Full Test
 
@@ -289,17 +373,17 @@ Expected final line:
 
 ## Message Protocol
 
-MeshNet sends compact JSON text messages over Meshtastic:
+MeshNet sends compact JSON packets over Meshtastic `PRIVATE_APP` payloads:
 
 ```json
-{"body":"hello","dst":"slave-001","h":"1234abcd5678ef90","id":"a1b2c3","n":"ericmesh-malaysia-test","seq":1,"src":"master-001","t":"ping","ts":1710000000,"v":1}
+{"a":1,"af":"","b":{"target":"slave-001"},"d":"slave-001","h":"1234abcd5678ef90","i":"a1b2c3","n":"ericmesh-malaysia-test","q":1,"s":"master-001","t":"ping","ts":1710000000,"v":2}
 ```
 
-The app signs each message without `h` using HMAC-SHA256 and `network.network_password`, stores the first 16 hex chars in `h`, and rejects invalid or wrong-network messages before processing.
+The app signs each message without `h` using HMAC-SHA256 and an app key derived from `network.network_password`, stores the first 16 hex chars in `h`, and rejects invalid or wrong-network messages before processing. The `i` field is the message ID, `a` is the retry attempt, and `af` identifies the message being acknowledged.
 
-MeshNet also rejects encoded envelopes above 230 characters. This is intentional: the JSON envelope itself consumes payload space, so very long human text should be shortened before sending.
+MeshNet also rejects encoded envelopes above 230 characters. This is intentional: the JSON envelope itself consumes payload space, so human text is limited to 60 characters by default.
 
-## Telegram Bridge
+## Telegram
 
 Telegram is optional and requires internet on the master Pi.
 
@@ -311,7 +395,6 @@ cp .env.example .env
 ```
 
 ```dotenv
-TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN="123456:token"
 TELEGRAM_ALLOWED_CHAT_ID=""
 ```
@@ -331,11 +414,13 @@ TELEGRAM_ALLOWED_CHAT_ID="123456789"
 
 Group chat IDs usually start with `-`.
 
-6. Start the bridge on the master Pi:
+6. Start the normal master runtime:
 
 ```bash
-meshnet telegram
+meshnet master
 ```
+
+If Telegram is configured, `meshnet master` starts the Telegram bridge and the master runtime checks in one process. If Telegram is missing or cannot start, MeshNet logs the reason, retries startup, then falls back to the normal master runtime. Do not run a separate Telegram process against the same USB radio.
 
 Supported Telegram commands:
 
@@ -357,7 +442,7 @@ Text sent by the allowed chat is forwarded as a MeshNet `text` message. Valid in
 
 Edit the service files first. Replace `pi` and `/home/pi/meshnet` with your real user/path.
 
-For master runtime:
+Use one service per Pi. On the master, `meshnet.service` starts the unified runtime and auto-enables Telegram when credentials are configured:
 
 ```bash
 sudo cp systemd/meshnet.service /etc/systemd/system/meshnet.service
@@ -367,17 +452,9 @@ sudo systemctl start meshnet.service
 sudo journalctl -u meshnet.service -f
 ```
 
-For Telegram bridge on the master:
-
-```bash
-sudo cp systemd/meshnet-telegram.service /etc/systemd/system/meshnet-telegram.service
-sudo systemctl daemon-reload
-sudo systemctl enable meshnet-telegram.service
-sudo systemctl start meshnet-telegram.service
-sudo journalctl -u meshnet-telegram.service -f
-```
-
 On the slave Pi, edit `meshnet.service` so the config path is `config.slave.yaml`.
+
+`systemd/meshnet-telegram.service` is kept only as a legacy alias and conflicts with `meshnet.service`; do not enable both.
 
 ## Troubleshooting
 
@@ -430,7 +507,7 @@ Set the same `radio.channel_name` on both configs and rerun `setup-radio`.
 
 ### Wrong Modem Preset
 
-Set both configs to the same `radio.modem_preset`, default `LONG_FAST`.
+Set all participating configs to the same `radio.modem_preset`. The Tasik Chini Flower bridge requires `SHORT_FAST`; the legacy message runtime can still use another mutually matching preset.
 
 ### Wrong USB Cable
 
@@ -442,7 +519,7 @@ Try unplugging/replugging, checking `dmesg`, using another USB port, and confirm
 
 ### Telegram Chat ID Wrong
 
-The bridge silently ignores chats that do not match `telegram.allowed_chat_id`. Confirm the numeric chat ID, including a leading minus sign for groups.
+Chats that do not match `telegram.allowed_chat_id` are ignored and logged. Confirm the numeric chat ID, including a leading minus sign for groups.
 
 ### Pi Has No Internet For Installation
 
@@ -473,6 +550,9 @@ Master:
 
 ```bash
 meshnet nodes
+meshnet registry
 meshnet ping
 meshnet test
+meshnet status
+meshnet master
 ```

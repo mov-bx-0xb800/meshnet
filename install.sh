@@ -46,6 +46,9 @@ fi
 
 echo "[install] Installation complete."
 echo
+echo "[next] For the short operator guide:"
+echo "       meshnet how-to"
+echo
 echo "[next] Confirm this Pi has a reachable Meshtastic USB radio:"
 echo "       meshnet check master"
 echo
@@ -55,8 +58,12 @@ echo
 echo "[next] Run this on slave:"
 echo "       meshnet setup slave"
 echo
-echo "[next] Then run:"
-echo "       meshnet test"
+echo "[next] Then start one runtime per Pi:"
+echo "       meshnet slave"
+echo "       meshnet master"
+echo
+echo "[next] For Flower over LoRa, read FLOWER_BRIDGE.md and run only:"
+echo "       meshnet bridge --config config.flower.yaml"
 echo
 echo "[next] If serial permissions were changed, log out and back in before using the radio."
 

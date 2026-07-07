@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import logger
 from .config import MeshConfig
+from .errors import MeshNetError, as_meshnet_error
 from .radio import detect_serial_ports, find_meshtastic_cli
 
 
@@ -21,8 +23,19 @@ class PreflightResult:
         self.errors.append(message)
 
 
-class PreflightError(RuntimeError):
-    pass
+class PreflightError(MeshNetError):
+    def __init__(self, result: PreflightResult, attempts: int) -> None:
+        message = "; ".join(result.errors) or "preflight failed"
+        error = as_meshnet_error(RuntimeError(message), "preflight", attempts=attempts)
+        super().__init__(
+            error.code,
+            error.stage,
+            error.message,
+            error.action,
+            retryable=error.retryable,
+            attempts=error.attempts,
+            details={"errors": list(result.errors), "port": result.port},
+        )
 
 
 def check_meshtastic_python() -> bool:
@@ -133,8 +146,27 @@ def preflight_check(
     return result
 
 
-def require_preflight(cfg: MeshConfig, *, verify_radio: bool = True) -> PreflightResult:
-    result = preflight_check(cfg, verify_radio=verify_radio)
-    if not result.ok:
-        raise PreflightError("preflight failed")
-    return result
+def require_preflight(
+    cfg: MeshConfig,
+    *,
+    verify_radio: bool = True,
+    attempts: int | None = None,
+) -> PreflightResult:
+    max_attempts = attempts or cfg.runtime.connect_retries
+    result = PreflightResult()
+    for attempt in range(1, max_attempts + 1):
+        if max_attempts > 1:
+            logger.line("preflight", f"Attempt {attempt}/{max_attempts}.")
+        result = preflight_check(cfg, verify_radio=verify_radio)
+        if result.ok:
+            return result
+        error = PreflightError(result, attempt)
+        if not error.retryable or attempt >= max_attempts:
+            raise error
+        logger.line(
+            "preflight",
+            f"Retrying in {cfg.runtime.retry_backoff_seconds} seconds "
+            f"[{error.code}].",
+        )
+        time.sleep(cfg.runtime.retry_backoff_seconds)
+    raise PreflightError(result, max_attempts)

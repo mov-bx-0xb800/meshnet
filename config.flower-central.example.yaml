@@ -1,8 +1,8 @@
 app:
-  node_id: "master-001"
+  node_id: "central-001"
   role: "master"
-  node_name: "Master Pi Node"
-  node_short_name: "MSTR"
+  node_name: "Tasik Chini Central"
+  node_short_name: "TCEN"
   log_level: "INFO"
 
 radio:
@@ -11,11 +11,12 @@ radio:
   modem_preset: "SHORT_FAST"
   hop_limit: 1
   frequency_slot: 8
+  # Example only. Recalculate from certified radio, cable loss, and antenna gain.
   tx_power: 23
   ignore_mqtt: true
   ok_to_mqtt: false
   channel_index: 0
-  channel_name: "ERICMESH"
+  channel_name: "TASIKFL"
   channel_psk_mode: "derived"
   channel_psk_base64: ""
   transmit_enabled: true
@@ -23,20 +24,25 @@ radio:
 device:
   role: "CLIENT_MUTE"
   rebroadcast_mode: "LOCAL_ONLY"
-  node_info_broadcast_secs: 3600
+  node_info_broadcast_secs: 86400
   is_power_saving: false
   serial_enabled: true
 
 network:
-  network_id: "ericmesh-malaysia-test"
-  network_password: "change-this-password"
-  allow_broadcast: true
-  master_id: "master-001"
-  slave_id: "slave-001"
+  network_id: "tasik-chini-flower-v1"
+  network_password: "REPLACE_WITH_A_LONG_RANDOM_SHARED_SECRET"
+  allow_broadcast: false
+  master_id: "central-001"
+  slave_id: "client-001"
+  peers:
+    - app_id: "client-001"
+      mesh_id: "!00000001"
+    - app_id: "client-002"
+      mesh_id: "!00000002"
 
 runtime:
-  heartbeat_interval_seconds: 60
-  ping_interval_seconds: 10
+  heartbeat_interval_seconds: 3600
+  ping_interval_seconds: 60
   ack_timeout_seconds: 25
   radio_ack_timeout_seconds: 15
   send_retries: 3
@@ -54,12 +60,12 @@ runtime:
   allow_fast_ping_interval: false
 
 telegram:
-  enabled: true
+  enabled: false
   bot_token: ""
   allowed_chat_id: ""
 
 bridge:
-  enabled: false
+  enabled: true
   listen_host: "127.0.0.1"
   listen_port: 8081
   upstream_host: "127.0.0.1"
