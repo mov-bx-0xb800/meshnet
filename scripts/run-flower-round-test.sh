@@ -55,6 +55,8 @@ MODEL_BYTES="${MODEL_BYTES:-}"
 WEIGHTS_NPZ="${WEIGHTS_NPZ:-}"
 STATUS_INTERVAL="${STATUS_INTERVAL:-10}"
 CAPTURE_RADIO_INFO="${CAPTURE_RADIO_INFO:-1}"
+EXPORT_LOG_ARCHIVE="${EXPORT_LOG_ARCHIVE:-1}"
+EXPORT_DIR="${EXPORT_DIR:-${ROOT_DIR}/exports}"
 AUTO_PUBLISH_LOGS="${AUTO_PUBLISH_LOGS:-1}"
 AUTO_LOG_PUSH="${AUTO_LOG_PUSH:-1}"
 AUTO_LOG_DIRECT_PUSH="${AUTO_LOG_DIRECT_PUSH:-1}"
@@ -83,6 +85,7 @@ METADATA_FILE="${RUN_DIR}/metadata.txt"
 REDACTED_CONFIG="${RUN_DIR}/config.redacted.yaml"
 METRICS_FINAL="${RUN_DIR}/metrics-final.json"
 ALL_LOG="${RUN_DIR}/all.log"
+ARCHIVE_FILE="${EXPORT_DIR}/flower-logs-${LOG_ROLE}-${RUN_ID}.tar.gz"
 PUBLISH_LOG="${ROOT_DIR}/.git/meshnet-log-publish-${RUN_ID}.log"
 
 mkdir -p "${RUN_DIR}"
@@ -198,6 +201,8 @@ write_metadata() {
     echo "status_interval=${STATUS_INTERVAL}"
     echo "bridge_metrics_interval=${BRIDGE_METRICS_INTERVAL}"
     echo "capture_radio_info=${CAPTURE_RADIO_INFO}"
+    echo "export_log_archive=${EXPORT_LOG_ARCHIVE}"
+    echo "archive_file=${ARCHIVE_FILE}"
     echo "auto_publish_logs=${AUTO_PUBLISH_LOGS}"
     echo "auto_log_push=${AUTO_LOG_PUSH}"
     echo "auto_log_direct_push=${AUTO_LOG_DIRECT_PUSH}"
@@ -293,6 +298,23 @@ write_all_log() {
   mv "${tmp}" "${ALL_LOG}" 2>/dev/null || true
 }
 
+export_log_archive() {
+  if [[ "${EXPORT_LOG_ARCHIVE}" == "0" || "${EXPORT_LOG_ARCHIVE}" == "false" || "${EXPORT_LOG_ARCHIVE}" == "no" ]]; then
+    return
+  fi
+  mkdir -p "${EXPORT_DIR}"
+  if tar -C "${ROOT_DIR}" -czf "${ARCHIVE_FILE}" "logs/${LOG_ROLE}/${RUN_ID}" 2>/dev/null; then
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "${ARCHIVE_FILE}" > "${ARCHIVE_FILE}.sha256" 2>/dev/null || true
+    elif command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 "${ARCHIVE_FILE}" > "${ARCHIVE_FILE}.sha256" 2>/dev/null || true
+    fi
+    echo "[run] archive=${ARCHIVE_FILE}"
+  else
+    echo "[run] archive_failed=${ARCHIVE_FILE}"
+  fi
+}
+
 auto_publish_logs() {
   if [[ "${AUTO_PUBLISH_LOGS}" == "0" || "${AUTO_PUBLISH_LOGS}" == "false" || "${AUTO_PUBLISH_LOGS}" == "no" ]]; then
     return
@@ -351,10 +373,12 @@ cleanup() {
   } >> "${METADATA_FILE}" 2>&1 || true
   echo "[run] log_bundle=${RUN_DIR}"
   echo "[run] all_log=${ALL_LOG}"
+  echo "[run] archive=${ARCHIVE_FILE}"
   echo "[run] auto_publish_logs=${AUTO_PUBLISH_LOGS}"
   echo "[run] publish_log=${PUBLISH_LOG}"
   echo "[run] manual_push_latest_logs=./scripts/push-latest-flower-logs.sh ${LOG_ROLE}"
   write_all_log
+  export_log_archive
   auto_publish_logs
 }
 trap 'status=$?; cleanup "${status}"; exit "${status}"' EXIT
