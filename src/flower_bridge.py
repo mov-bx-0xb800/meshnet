@@ -104,6 +104,7 @@ class BridgeConnection:
         send_frame: Callable[[str, StreamFrame], None],
         metrics: StreamMetrics,
         on_local_eof: Callable[["BridgeConnection"], None],
+        on_local_data: Callable[["BridgeConnection"], None],
         on_error: Callable[["BridgeConnection", Exception], None],
     ) -> None:
         self.peer_id = peer_id
@@ -125,6 +126,7 @@ class BridgeConnection:
         self.last_poll_bytes = 0
         self.metrics = metrics
         self._on_local_eof = on_local_eof
+        self._on_local_data = on_local_data
         self._on_error = on_error
         queue_slots = max(8, cfg.bridge.max_buffer_bytes // cfg.bridge.payload_bytes)
         self._rx_queue: "queue.Queue[bytes | None]" = queue.Queue(maxsize=queue_slots)
@@ -215,6 +217,7 @@ class BridgeConnection:
                     return
                 self.metrics.local_bytes_received += len(data)
                 self.stream.queue_bytes(data)
+                self._on_local_data(self)
         except (OSError, ReliableStreamError) as exc:
             if not self.closed.is_set():
                 self._on_error(self, exc)
@@ -593,8 +596,25 @@ class FlowerBridge:
             send_frame=self._send_frame,
             metrics=self.metrics,
             on_local_eof=self._on_local_eof,
+            on_local_data=self._on_local_data,
             on_error=self._connection_error,
         )
+
+    def _on_local_data(self, connection: BridgeConnection) -> None:
+        threading.Thread(
+            target=self._send_available_window,
+            args=(connection,),
+            name=f"bridge-send-window-{connection.peer_id}-{connection.session_id}",
+            daemon=True,
+        ).start()
+
+    def _send_available_window(self, connection: BridgeConnection) -> None:
+        if connection.closed.is_set() or not connection.stream.pending_bytes:
+            return
+        try:
+            connection.stream.send_window()
+        except Exception as exc:
+            self._connection_error(connection, exc)
 
     def _on_local_eof(self, connection: BridgeConnection) -> None:
         def flush_and_close_write() -> None:

@@ -21,6 +21,9 @@ class StreamMetrics:
     local_bytes_received: int = 0
     local_bytes_sent: int = 0
     stream_bytes_queued: int = 0
+    stream_send_window_calls: int = 0
+    stream_send_window_empty: int = 0
+    stream_window_bytes_sent: int = 0
     data_bytes_sent: int = 0
     data_bytes_received: int = 0
     acknowledgements_sent: int = 0
@@ -42,6 +45,9 @@ class StreamMetrics:
             "local_bytes_received": self.local_bytes_received,
             "local_bytes_sent": self.local_bytes_sent,
             "stream_bytes_queued": self.stream_bytes_queued,
+            "stream_send_window_calls": self.stream_send_window_calls,
+            "stream_send_window_empty": self.stream_send_window_empty,
+            "stream_window_bytes_sent": self.stream_window_bytes_sent,
             "data_bytes_sent": self.data_bytes_sent,
             "data_bytes_received": self.data_bytes_received,
             "acknowledgements_sent": self.acknowledgements_sent,
@@ -151,6 +157,7 @@ class ReliableStream:
             return self.pending_bytes > 0
 
     def send_window(self) -> int:
+        self.metrics.stream_send_window_calls += 1
         with self._send_lock:
             with self._condition:
                 if self._closed:
@@ -167,6 +174,7 @@ class ReliableStream:
                             raise ReliableStreamError("stream sequence space exhausted")
                         self._pending[sequence] = payload
                 if not self._pending:
+                    self.metrics.stream_send_window_empty += 1
                     return 0
                 window_bytes = sum(len(item) for item in self._pending.values())
 
@@ -207,6 +215,7 @@ class ReliableStream:
                     if all(self._is_acked(seq) for seq in self._pending):
                         self._pending.clear()
                         self._condition.notify_all()
+                        self.metrics.stream_window_bytes_sent += window_bytes
                         return window_bytes
 
             raise ReliableStreamError(
