@@ -461,7 +461,10 @@ def proto_field_value(message: Any, field_name: str) -> Any:
     value = getattr(message, field_name, None)
     descriptor = getattr(message, "DESCRIPTOR", None)
     fields = getattr(descriptor, "fields_by_name", {}) if descriptor is not None else {}
-    field = fields.get(field_name) if isinstance(fields, dict) else None
+    try:
+        field = fields.get(field_name)
+    except AttributeError:
+        field = None
     enum_type = getattr(field, "enum_type", None)
     if enum_type is not None and value is not None:
         enum_value = enum_type.values_by_number.get(int(value))

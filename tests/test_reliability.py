@@ -12,7 +12,12 @@ from src.errors import MeshNetError
 from src.master import MasterNode
 from src.node import MeshNode
 from src.protocol import make_message
-from src.radio import RadioClient, radio_config_mismatches, setup_radio_reliably
+from src.radio import (
+    RadioClient,
+    proto_field_value,
+    radio_config_mismatches,
+    setup_radio_reliably,
+)
 from src.slave import run_slave
 from src.state import SEEN_TTL_SECONDS
 
@@ -92,6 +97,24 @@ class ReliabilityTests(unittest.TestCase):
 
         self.assertEqual(len(mismatches), 1)
         self.assertIn("channel.name", mismatches[0])
+
+    def test_proto_field_value_converts_meshtastic_enum_numbers_to_names(self) -> None:
+        from meshtastic.protobuf import config_pb2
+
+        lora = config_pb2.Config.LoRaConfig()
+        lora.region = config_pb2.Config.LoRaConfig.RegionCode.MY_919
+        lora.modem_preset = config_pb2.Config.LoRaConfig.ModemPreset.SHORT_FAST
+
+        device = config_pb2.Config.DeviceConfig()
+        device.role = config_pb2.Config.DeviceConfig.Role.CLIENT_MUTE
+        device.rebroadcast_mode = (
+            config_pb2.Config.DeviceConfig.RebroadcastMode.LOCAL_ONLY
+        )
+
+        self.assertEqual(proto_field_value(lora, "region"), "MY_919")
+        self.assertEqual(proto_field_value(lora, "modem_preset"), "SHORT_FAST")
+        self.assertEqual(proto_field_value(device, "role"), "CLIENT_MUTE")
+        self.assertEqual(proto_field_value(device, "rebroadcast_mode"), "LOCAL_ONLY")
 
     def test_binary_radio_path_preserves_non_utf8_payload(self) -> None:
         radio = RadioClient(self.cfg, "test")
