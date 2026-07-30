@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -51,14 +53,17 @@ class MeshNetClient:
 
     def config_summary(self) -> JsonDict:
         cfg = self.reload()
+        radio = to_jsonable(cfg.radio)
+        channel_psk_base64 = radio.pop("channel_psk_base64", "")
         return {
             "config_path": str(cfg.path),
             "state_path": str(state_path_for_config(cfg)),
             "fingerprint": config_fingerprint(cfg),
             "app": to_jsonable(cfg.app),
             "radio": {
-                **to_jsonable(cfg.radio),
+                **radio,
                 "channel_psk": channel_psk_description(cfg),
+                "channel_psk_base64_set": bool(channel_psk_base64),
             },
             "device": to_jsonable(cfg.device),
             "network": {
@@ -66,8 +71,10 @@ class MeshNetClient:
                 "allow_broadcast": cfg.network.allow_broadcast,
                 "master_id": cfg.network.master_id,
                 "slave_id": cfg.network.slave_id,
+                "peers": [to_jsonable(peer) for peer in cfg.network.peers],
             },
             "runtime": to_jsonable(cfg.runtime),
+            "bridge": to_jsonable(cfg.bridge),
             "telegram": {
                 "configured": cfg.telegram.configured,
                 "enabled": cfg.telegram.enabled,
@@ -96,8 +103,29 @@ class MeshNetClient:
                 if not isinstance(current, dict):
                     raise ValueError(f"config section is not an object: {section}")
                 current.update(dict(values))
-            with self.config_path.open("w", encoding="utf-8") as fh:
-                yaml.safe_dump(raw, fh, sort_keys=False)
+            config_path = self.config_path.resolve()
+            original_mode = config_path.stat().st_mode & 0o777
+            temporary_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=config_path.parent,
+                    prefix=f".{config_path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as fh:
+                    yaml.safe_dump(raw, fh, sort_keys=False)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                    temporary_path = Path(fh.name)
+                temporary_path.chmod(original_mode)
+                load_config(temporary_path)
+                os.replace(temporary_path, config_path)
+                temporary_path = None
+            finally:
+                if temporary_path is not None:
+                    temporary_path.unlink(missing_ok=True)
             self.reload()
             return self.config_summary()
         except MeshNetError:

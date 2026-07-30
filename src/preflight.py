@@ -8,7 +8,7 @@ from pathlib import Path
 from . import logger
 from .config import MeshConfig
 from .errors import MeshNetError, as_meshnet_error
-from .radio import detect_serial_ports, find_meshtastic_cli
+from .radio import RadioClient, detect_serial_ports, find_meshtastic_cli
 
 
 @dataclass
@@ -72,25 +72,16 @@ def choose_port(cfg: MeshConfig, result: PreflightResult, scope: str) -> str | N
 
 
 def verify_radio_reachable(
+    cfg: MeshConfig,
     port: str,
     result: PreflightResult,
     scope: str,
     timeout: int = 20,
 ) -> None:
+    radio = RadioClient(cfg, scope)
+    radio.port = port
     try:
-        import meshtastic.serial_interface
-    except Exception as exc:
-        result.fail("Meshtastic Python SerialInterface import failed")
-        logger.line(scope, f"Radio API import: FAILED ({exc})")
-        return
-
-    try:
-        interface = meshtastic.serial_interface.SerialInterface(
-            devPath=port,
-            noNodes=True,
-            timeout=timeout,
-        )
-        interface.close()
+        radio.connect(no_nodes=True, timeout=timeout)
         logger.line(scope, "Radio reachable: OK")
     except PermissionError:
         result.fail(f"permission denied opening {port}")
@@ -98,6 +89,8 @@ def verify_radio_reachable(
     except Exception as exc:
         result.fail(f"radio is not reachable on {port}: {exc}")
         logger.line(scope, f"Radio reachable: FAILED ({exc})")
+    finally:
+        radio.close()
 
 
 def preflight_check(
@@ -127,7 +120,7 @@ def preflight_check(
     if require_radio:
         port = choose_port(cfg, result, scope)
         if port and verify_radio and check_meshtastic_python():
-            verify_radio_reachable(port, result, scope)
+            verify_radio_reachable(cfg, port, result, scope)
 
     if result.ok:
         logger.line(scope, "Preflight passed. Proceeding.")

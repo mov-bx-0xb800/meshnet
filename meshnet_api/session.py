@@ -51,7 +51,9 @@ class MeshNetSession:
 
     def connect(self) -> None:
         if self.node is not None:
-            return
+            if self.node.radio.is_connected():
+                return
+            self.close()
         try:
             self.cfg = load_config(self.config_path)
         except Exception as exc:
@@ -78,9 +80,14 @@ class MeshNetSession:
 
     def reload_config(self) -> MeshConfig:
         try:
-            self.cfg = load_config(self.config_path)
+            updated = load_config(self.config_path)
         except Exception as exc:
             raise as_meshnet_error(exc, "config") from exc
+        reconnect = self.node is not None
+        self.cfg = updated
+        if reconnect:
+            self.close()
+            self.connect()
         return self.cfg
 
     def reconnect(self) -> None:

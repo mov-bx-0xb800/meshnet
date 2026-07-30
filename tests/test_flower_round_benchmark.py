@@ -8,7 +8,6 @@ import unittest
 import zipfile
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "flower_round_benchmark.py"
 SPEC = importlib.util.spec_from_file_location("flower_round_benchmark", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
@@ -101,6 +100,14 @@ class FlowerRoundBenchmarkProtocolTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_peer_mismatch_warns_by_default_and_can_be_strict(self) -> None:
+        parser = benchmark.build_parser()
+        default_args = parser.parse_args(["server"])
+        strict_args = parser.parse_args(["server", "--strict-peer-match"])
+
+        self.assertFalse(benchmark.peer_mismatch_is_fatal(default_args))
+        self.assertTrue(benchmark.peer_mismatch_is_fatal(strict_args))
 
     def test_message_frame_round_trips_with_binary_payload(self) -> None:
         left, right = socket.socketpair()

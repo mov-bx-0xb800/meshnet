@@ -1,18 +1,30 @@
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from . import logger
 from .config import MeshConfig
 from .errors import MeshNetError, as_meshnet_error, log_meshnet_error
-from .protocol import Envelope, decode_envelope, encode_envelope, make_message, verify_envelope
-from .radio import BROADCAST_ADDR, RadioClient, packet_from_mesh_id, packet_to_mesh_id
+from .protocol import (
+    Envelope,
+    decode_envelope,
+    encode_envelope,
+    make_message,
+    verify_envelope,
+)
+from .radio import (
+    BROADCAST_ADDR,
+    RadioClient,
+    packet_from_mesh_id,
+    packet_to_mesh_id,
+    radio_config_mismatches,
+)
 from .state import SEEN_TTL_SECONDS, StateStore, config_fingerprint
-
 
 MAX_ACCEPTED_MESSAGES = 200
 MAX_RESPONSE_CACHE_ENTRIES = 4096
@@ -54,6 +66,9 @@ class MeshNode:
         self._last_transport_error = ""
         self._last_transport_code = ""
         self._last_transport_action = ""
+        self._accepted_handlers: list[
+            Callable[[Envelope, dict[str, Any]], None]
+        ] = []
 
     def connect(self) -> None:
         self.radio.add_handler(self._on_radio_text)
@@ -63,6 +78,24 @@ class MeshNode:
             try:
                 logger.line(self.scope, f"Connection attempt {attempt}/{max_attempts}.")
                 self.radio.connect(no_nodes=False)
+                actual = self.radio.actual_config_summary()
+                if not actual:
+                    raise MeshNetError(
+                        "RADIO_CONFIG_UNAVAILABLE",
+                        "connect",
+                        "the attached radio did not return readable configuration",
+                        "Keep the radio attached and retry; run meshnet doctor if it repeats.",
+                        retryable=True,
+                    )
+                mismatches = radio_config_mismatches(self.cfg, actual)
+                if mismatches:
+                    raise MeshNetError(
+                        "RADIO_CONFIG_MISMATCH",
+                        "connect",
+                        "the attached radio does not match the active YAML config",
+                        "Run meshnet setup for this node, then run meshnet doctor.",
+                        details={"mismatches": mismatches},
+                    )
                 return
             except KeyboardInterrupt:
                 raise
@@ -85,6 +118,14 @@ class MeshNode:
         self._running = False
         self.radio.close()
         self.state.close()
+
+    def add_accepted_handler(
+        self,
+        handler: Callable[[Envelope, dict[str, Any]], None],
+    ) -> None:
+        """Observe messages only after all MeshNet acceptance checks pass."""
+        if handler not in self._accepted_handlers:
+            self._accepted_handlers.append(handler)
 
     def next_seq(self) -> int:
         self._seq += 1
@@ -325,7 +366,12 @@ class MeshNode:
         if dst == "broadcast":
             return BROADCAST_ADDR
         if dst.startswith("!"):
-            return dst
+            normalized = dst.lower()
+            if re.fullmatch(r"![0-9a-f]{8}", normalized) is None:
+                raise ValueError(
+                    "direct Meshtastic destination must look like !a1b2c3d4"
+                )
+            return normalized
         configured_mesh_id = self.cfg.mesh_id_for(dst)
         if configured_mesh_id and configured_mesh_id != "unknown":
             return configured_mesh_id
@@ -362,8 +408,8 @@ class MeshNode:
             return
         if envelope.dst == "broadcast" and not self.cfg.network.allow_broadcast:
             return
-        local_mesh_id = self.radio.local_mesh_id()
-        packet_to = packet_to_mesh_id(packet)
+        local_mesh_id = self.radio.local_mesh_id().lower()
+        packet_to = packet_to_mesh_id(packet).lower()
         if envelope.dst == self.cfg.app.node_id and packet_to not in {
             "",
             local_mesh_id,
@@ -382,11 +428,34 @@ class MeshNode:
             if len(self._accepted) > MAX_ACCEPTED_MESSAGES:
                 del self._accepted[: len(self._accepted) - MAX_ACCEPTED_MESSAGES]
             self._condition.notify_all()
+        for handler in list(self._accepted_handlers):
+            try:
+                handler(envelope, packet)
+            except Exception as exc:
+                logger.exception_line(self.scope, "accepted-message handler failed", exc)
         self.handle_message(envelope, packet)
 
     def _remember_sender(self, envelope: Envelope, packet: dict[str, Any]) -> bool:
         body = envelope.body if isinstance(envelope.body, dict) else {}
-        mesh_id = str(body.get("m") or body.get("mesh_id") or packet_from_mesh_id(packet) or "")
+        packet_mesh_id = packet_from_mesh_id(packet).lower()
+        claimed_mesh_id = str(body.get("m") or body.get("mesh_id") or "").lower()
+        if packet_mesh_id and claimed_mesh_id and packet_mesh_id != claimed_mesh_id:
+            logger.line(
+                "security",
+                f"Rejected {envelope.src}: authenticated body mesh ID "
+                f"{claimed_mesh_id} does not match radio source {packet_mesh_id}.",
+            )
+            return False
+        configured_mesh_id = self.cfg.mesh_id_for(envelope.src)
+        if configured_mesh_id and packet_mesh_id != configured_mesh_id.lower():
+            logger.line(
+                "security",
+                f"Rejected {envelope.src}: radio source "
+                f"{packet_mesh_id or 'missing'} does not match pinned peer "
+                f"{configured_mesh_id.lower()}.",
+            )
+            return False
+        mesh_id = packet_mesh_id or claimed_mesh_id
         if not mesh_id or mesh_id == "unknown":
             return True
         status = self.state.upsert_node(

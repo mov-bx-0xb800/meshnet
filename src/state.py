@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -9,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from .config import MeshConfig, channel_psk_for_cli
-
 
 STATE_SCHEMA_VERSION = 1
 SEEN_TTL_SECONDS = 24 * 60 * 60
@@ -42,14 +42,7 @@ def config_fingerprint(cfg: MeshConfig) -> str:
         "channel_index": cfg.radio.channel_index,
         "channel": cfg.radio.channel_name,
         "psk": channel_psk_for_cli(cfg),
-        "hop_limit": cfg.radio.hop_limit,
         "frequency_slot": cfg.radio.frequency_slot,
-        "tx_power": cfg.radio.tx_power,
-        "ignore_mqtt": cfg.radio.ignore_mqtt,
-        "ok_to_mqtt": cfg.radio.ok_to_mqtt,
-        "device_role": cfg.device.role,
-        "rebroadcast_mode": cfg.device.rebroadcast_mode,
-        "serial_enabled": cfg.device.serial_enabled,
         "network": cfg.network.network_id,
     }
     encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -236,6 +229,12 @@ class StateStore:
         return [_node_from_row(row) for row in rows]
 
     def trust_node(self, app_id: str, mesh_id: str) -> None:
+        app_id = app_id.strip()
+        mesh_id = mesh_id.strip().lower()
+        if not app_id:
+            raise ValueError("app_id is required")
+        if re.fullmatch(r"![0-9a-f]{8}", mesh_id) is None:
+            raise ValueError("mesh_id must look like !a1b2c3d4")
         now = time.time()
         with self._lock:
             self.conn.execute(

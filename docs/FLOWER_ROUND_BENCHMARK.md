@@ -84,7 +84,8 @@ The benchmark hello carries the local Git commit and detected radio firmware.
 A mismatch is logged as a warning by default so it cannot terminate the
 central runner immediately after the client connects. For a deliberately
 strict acceptance run, set `ALLOW_PEER_MISMATCH=0`; a mismatch will then be
-rejected before model DATA starts.
+rejected before model DATA starts. The benchmark command itself follows the
+same policy: use `--strict-peer-match` to opt into rejection.
 
 For a short transport smoke test:
 

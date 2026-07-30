@@ -40,7 +40,9 @@ Checked implementation state:
 - Central example conducted `tx_power` is `23`; client example conducted `tx_power` is `24`.
 - Bridge validation requires `MY_919`, `SHORT_FAST`, hop limit `1`, slot `1..15`, explicit `tx_power`, `CLIENT_MUTE`, broadcast disabled, power saving disabled, and MQTT LoRa ingress/egress disabled.
 - Normal non-bridge config validation only checks broad numeric ranges like slot `0..255` and tx power `0..30`. It does not globally enforce safe Malaysia slot/bandwidth combinations.
-- Radio setup writes region, preset, hop limit, channel slot, and tx power, but does not clear or verify Meshtastic `override_frequency` or `frequency_offset`.
+- Radio setup and bridge startup clear and verify preset mode,
+  `override_frequency`, and `frequency_offset` in addition to region, preset,
+  hop limit, channel slot, and TX power.
 - Code-level settings are not RF proof. They do not prove final EIRP, occupied bandwidth, oscillator margin, spurious emissions, or certified FH/LBT.
 
 Local anchors:
@@ -69,7 +71,8 @@ But the implementation is not compliance-proven because:
 
 - EIRP is not calculated or enforced.
 - `tx_power` is conducted radio power, not EIRP.
-- `override_frequency` and `frequency_offset` are not cleared or verified.
+- `override_frequency` and `frequency_offset` are cleared to zero and verified
+  before the Flower bridge accepts traffic.
 - No airtime ledger exists.
 - No proof exists that Meshtastic `MY_919` frequency switching is certified frequency hopping.
 - No proof exists that Meshtastic CAD/backoff is certified LBT.

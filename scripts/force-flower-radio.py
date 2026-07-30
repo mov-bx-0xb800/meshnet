@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -16,15 +15,42 @@ if str(ROOT) not in sys.path:
 from src.config import channel_psk_for_cli, load_config
 from src.radio import RadioClient, radio_config_mismatches, resolve_port
 
+SERVICES = ("meshnet-flower-bridge", "meshnet", "meshnet-telegram")
 
-def stop_services() -> None:
-    for service in ("meshnet-flower-bridge", "meshnet", "meshnet-telegram"):
+
+def stop_services() -> list[str]:
+    active: list[str] = []
+    for service in SERVICES:
+        try:
+            status = subprocess.run(
+                ["systemctl", "is-active", "--quiet", service],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except OSError:
+            return []
+        if status.returncode == 0:
+            active.append(service)
         subprocess.run(
             ["sudo", "systemctl", "stop", service],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
         )
+    return active
+
+
+def restore_services(services: list[str]) -> None:
+    for service in services:
+        result = subprocess.run(
+            ["sudo", "systemctl", "start", service],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if result.returncode != 0:
+            print(f"[force] warning: could not restore {service}", file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,8 +96,11 @@ def force_config(cfg, port: str, *, no_reboot: bool = False) -> int:
         time.sleep(1)
 
         lora = node.localConfig.lora
+        lora.use_preset = True
         lora.region = enum_number(lora, "region", cfg.radio.region)
         lora.modem_preset = enum_number(lora, "modem_preset", cfg.radio.modem_preset)
+        lora.frequency_offset = 0.0
+        lora.override_frequency = 0.0
         lora.hop_limit = int(cfg.radio.hop_limit)
         lora.channel_num = int(cfg.radio.frequency_slot)
         lora.tx_power = int(cfg.radio.tx_power)
@@ -80,7 +109,8 @@ def force_config(cfg, port: str, *, no_reboot: bool = False) -> int:
         lora.tx_enabled = bool(cfg.radio.transmit_enabled)
         print(
             "[force] write lora "
-            f"region={cfg.radio.region} modem={cfg.radio.modem_preset} "
+            f"use_preset=true region={cfg.radio.region} modem={cfg.radio.modem_preset} "
+            "frequency_offset=0 override_frequency=0 "
             f"slot={cfg.radio.frequency_slot} tx_power={cfg.radio.tx_power}"
         )
         node.writeConfig("lora")
@@ -145,11 +175,13 @@ def main() -> int:
 
     print(f"[force] config={cfg.path}")
     print(f"[force] role={cfg.app.role} node={cfg.app.node_id}")
-    stop_services()
-
-    port = args.port or resolve_port(cfg, "force", verbose=True)
-    print(f"[force] port={port}")
-    return force_config(cfg, port, no_reboot=args.no_reboot)
+    active_services = stop_services()
+    try:
+        port = args.port or resolve_port(cfg, "force", verbose=True)
+        print(f"[force] port={port}")
+        return force_config(cfg, port, no_reboot=args.no_reboot)
+    finally:
+        restore_services(active_services)
 
 
 if __name__ == "__main__":

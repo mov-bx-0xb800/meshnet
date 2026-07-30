@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import glob
 import os
 import queue
@@ -9,7 +10,6 @@ import sys
 import tempfile
 import threading
 import time
-import base64
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -17,7 +17,6 @@ from typing import Any, Callable
 from . import logger
 from .config import MeshConfig, channel_psk_description, channel_psk_for_cli
 from .errors import MeshNetError, as_meshnet_error, log_meshnet_error
-
 
 BROADCAST_ADDR = "^all"
 SERIAL_PATTERNS = ("/dev/ttyACM*", "/dev/ttyUSB*")
@@ -201,12 +200,18 @@ class RadioClient:
             return
         safe = port.strip("/").replace("/", "_") or "auto"
         path = Path(tempfile.gettempdir()) / f"meshnet-{safe}.lock"
-        fh = path.open("w", encoding="utf-8")
+        flags = os.O_WRONLY | os.O_CREAT
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags, 0o600)
+        fh = os.fdopen(fd, "w", encoding="utf-8")
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             fh.close()
             raise RuntimeError(f"serial port is already in use by another MeshNet process: {port}") from exc
+        fh.seek(0)
+        fh.truncate()
         fh.write(f"{os.getpid()}\n")
         fh.flush()
         self._lock_file = fh
@@ -227,6 +232,12 @@ class RadioClient:
         self._lock_file = None
 
     def _on_receive(self, packet: dict[str, Any] | None = None, interface: Any = None, **_: Any) -> None:
+        if (
+            interface is not None
+            and self.interface is not None
+            and interface is not self.interface
+        ):
+            return
         if not packet:
             return
         payload = extract_payload(packet)
@@ -384,8 +395,15 @@ class RadioClient:
         except Exception:
             pass
         if lora is not None:
+            summary["lora.use_preset"] = proto_field_value(lora, "use_preset")
             summary["lora.region"] = proto_field_value(lora, "region")
             summary["lora.modem_preset"] = proto_field_value(lora, "modem_preset")
+            summary["lora.frequency_offset"] = proto_field_value(
+                lora, "frequency_offset"
+            )
+            summary["lora.override_frequency"] = proto_field_value(
+                lora, "override_frequency"
+            )
             summary["lora.hop_limit"] = proto_field_value(lora, "hop_limit")
             summary["lora.tx_enabled"] = proto_field_value(lora, "tx_enabled")
             summary["lora.channel_num"] = proto_field_value(lora, "channel_num")
@@ -478,8 +496,11 @@ def radio_config_mismatches(cfg: MeshConfig, actual: dict[str, Any]) -> list[str
     expected: dict[str, Any] = {
         "owner.long_name": cfg.app.node_name,
         "owner.short_name": cfg.app.node_short_name,
+        "lora.use_preset": True,
         "lora.region": cfg.radio.region,
         "lora.modem_preset": cfg.radio.modem_preset,
+        "lora.frequency_offset": 0.0,
+        "lora.override_frequency": 0.0,
         "lora.hop_limit": cfg.radio.hop_limit,
         "lora.tx_enabled": cfg.radio.transmit_enabled,
         "lora.channel_num": cfg.radio.frequency_slot,
@@ -636,8 +657,11 @@ def setup_radio(cfg: MeshConfig) -> None:
 
     psk = channel_psk_for_cli(cfg)
     logger.line("setup", "Applying radio configuration...")
+    logger.line("setup", "Setting lora.use_preset = true")
     logger.line("setup", f"Setting lora.region = {cfg.radio.region}")
     logger.line("setup", f"Setting lora.modem_preset = {cfg.radio.modem_preset}")
+    logger.line("setup", "Setting lora.frequency_offset = 0")
+    logger.line("setup", "Setting lora.override_frequency = 0")
     logger.line("setup", f"Setting lora.hop_limit = {cfg.radio.hop_limit}")
     logger.line("setup", f"Setting lora.channel_num = {cfg.radio.frequency_slot}")
     logger.line("setup", f"Setting lora.tx_power = {cfg.radio.tx_power}")
@@ -660,11 +684,20 @@ def setup_radio(cfg: MeshConfig) -> None:
         "--dest",
         "^local",
         "--set",
+        "lora.use_preset",
+        "true",
+        "--set",
         "lora.region",
         cfg.radio.region,
         "--set",
         "lora.modem_preset",
         cfg.radio.modem_preset,
+        "--set",
+        "lora.frequency_offset",
+        "0",
+        "--set",
+        "lora.override_frequency",
+        "0",
         "--set",
         "lora.hop_limit",
         str(cfg.radio.hop_limit),
