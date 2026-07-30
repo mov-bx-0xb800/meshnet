@@ -55,6 +55,11 @@ MODEL_BYTES="${MODEL_BYTES:-}"
 WEIGHTS_NPZ="${WEIGHTS_NPZ:-}"
 STATUS_INTERVAL="${STATUS_INTERVAL:-10}"
 CAPTURE_RADIO_INFO="${CAPTURE_RADIO_INFO:-1}"
+AUTO_PUBLISH_LOGS="${AUTO_PUBLISH_LOGS:-1}"
+AUTO_LOG_PUSH="${AUTO_LOG_PUSH:-1}"
+AUTO_LOG_DIRECT_PUSH="${AUTO_LOG_DIRECT_PUSH:-1}"
+AUTO_LOG_PR="${AUTO_LOG_PR:-1}"
+AUTO_LOG_BASE_BRANCH="${AUTO_LOG_BASE_BRANCH:-}"
 JOURNAL_SINCE="${JOURNAL_SINCE:-2 hours ago}"
 BRIDGE_METRICS_INTERVAL="${STATUS_INTERVAL}"
 if [[ "${BRIDGE_METRICS_INTERVAL}" == "0" || "${BRIDGE_METRICS_INTERVAL}" == "false" ]]; then
@@ -78,6 +83,7 @@ METADATA_FILE="${RUN_DIR}/metadata.txt"
 REDACTED_CONFIG="${RUN_DIR}/config.redacted.yaml"
 METRICS_FINAL="${RUN_DIR}/metrics-final.json"
 ALL_LOG="${RUN_DIR}/all.log"
+PUBLISH_LOG="${ROOT_DIR}/.git/meshnet-log-publish-${RUN_ID}.log"
 
 mkdir -p "${RUN_DIR}"
 exec > >(tee -a "${RUN_LOG}") 2>&1
@@ -192,6 +198,12 @@ write_metadata() {
     echo "status_interval=${STATUS_INTERVAL}"
     echo "bridge_metrics_interval=${BRIDGE_METRICS_INTERVAL}"
     echo "capture_radio_info=${CAPTURE_RADIO_INFO}"
+    echo "auto_publish_logs=${AUTO_PUBLISH_LOGS}"
+    echo "auto_log_push=${AUTO_LOG_PUSH}"
+    echo "auto_log_direct_push=${AUTO_LOG_DIRECT_PUSH}"
+    echo "auto_log_pr=${AUTO_LOG_PR}"
+    echo "auto_log_base_branch=${AUTO_LOG_BASE_BRANCH:-default}"
+    echo "publish_log=${PUBLISH_LOG}"
     echo "journal_since=${JOURNAL_SINCE}"
     echo "python=$("${PY}" --version 2>&1)"
     echo "meshtastic_cli=${MESHTASTIC_CLI}"
@@ -281,6 +293,32 @@ write_all_log() {
   mv "${tmp}" "${ALL_LOG}" 2>/dev/null || true
 }
 
+auto_publish_logs() {
+  if [[ "${AUTO_PUBLISH_LOGS}" == "0" || "${AUTO_PUBLISH_LOGS}" == "false" || "${AUTO_PUBLISH_LOGS}" == "no" ]]; then
+    return
+  fi
+  if [[ ! -d "${ROOT_DIR}/.git" ]]; then
+    return
+  fi
+  if [[ ! -x "${ROOT_DIR}/scripts/push-latest-flower-logs.sh" ]]; then
+    return
+  fi
+  mkdir -p "$(dirname "${PUBLISH_LOG}")"
+  {
+    echo "===== auto publish $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
+    echo "run_dir=${RUN_DIR}"
+    set +e
+    AUTO_LOG_DIRECT_PUSH="${AUTO_LOG_DIRECT_PUSH}" \
+      AUTO_LOG_PUSH="${AUTO_LOG_PUSH}" \
+      AUTO_LOG_PR="${AUTO_LOG_PR}" \
+      AUTO_LOG_BASE_BRANCH="${AUTO_LOG_BASE_BRANCH}" \
+      "${ROOT_DIR}/scripts/push-latest-flower-logs.sh" "${LOG_ROLE}" "${RUN_DIR}"
+    local publish_status=$?
+    set -e
+    echo "exit_status=${publish_status}"
+  } > "${PUBLISH_LOG}" 2>&1 || true
+}
+
 stop_services() {
   sudo systemctl stop meshnet-flower-bridge 2>/dev/null || true
   sudo systemctl stop meshnet 2>/dev/null || true
@@ -311,10 +349,13 @@ cleanup() {
     echo "finished_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "exit_status=${status}"
   } >> "${METADATA_FILE}" 2>&1 || true
-  write_all_log
   echo "[run] log_bundle=${RUN_DIR}"
   echo "[run] all_log=${ALL_LOG}"
-  echo "[run] push_latest_logs=./scripts/push-latest-flower-logs.sh ${LOG_ROLE}"
+  echo "[run] auto_publish_logs=${AUTO_PUBLISH_LOGS}"
+  echo "[run] publish_log=${PUBLISH_LOG}"
+  echo "[run] manual_push_latest_logs=./scripts/push-latest-flower-logs.sh ${LOG_ROLE}"
+  write_all_log
+  auto_publish_logs
 }
 trap 'status=$?; cleanup "${status}"; exit "${status}"' EXIT
 trap 'exit 130' INT
