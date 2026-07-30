@@ -80,7 +80,14 @@ class RadioFrameTransport:
         mesh_id = packet_from_mesh_id(packet).lower()
         peer_id = self.cfg.app_id_for_mesh(mesh_id)
         if peer_id is None:
-            logger.line("security", f"Ignored stream frame from unpinned radio {mesh_id or 'unknown'}.")
+            configured = ", ".join(
+                f"{peer.app_id}={peer.mesh_id.lower()}" for peer in self.cfg.network.peers
+            )
+            logger.line(
+                "security",
+                "Ignored stream frame from unpinned radio "
+                f"{mesh_id or 'unknown'}; configured peers: {configured or 'none'}.",
+            )
             return
         if self._handler is not None:
             self._handler(peer_id, payload)
@@ -342,6 +349,11 @@ class FlowerBridge:
             flags=flags,
             payload=payload,
         )
+        if frame_type in {FrameType.OPEN, FrameType.OPEN_OK, FrameType.RESET}:
+            logger.line(
+                "bridge-control",
+                f"tx {frame_type.name} peer={peer_id} session={session_id} repeat={repeat}",
+            )
         for _ in range(repeat):
             self._send_frame(peer_id, frame)
             self.metrics.frames_sent += 1
@@ -355,7 +367,17 @@ class FlowerBridge:
             return
         if peer_id not in {peer.app_id for peer in self.cfg.network.peers}:
             self.metrics.invalid_frames += 1
+            logger.line(
+                "security",
+                f"Rejected bridge frame from unconfigured app peer {peer_id}.",
+            )
             return
+
+        if frame.frame_type in {FrameType.OPEN, FrameType.OPEN_OK, FrameType.RESET}:
+            logger.line(
+                "bridge-control",
+                f"rx {frame.frame_type.name} peer={peer_id} session={frame.session_id}",
+            )
 
         if frame.frame_type in {FrameType.DATA, FrameType.ACK}:
             connection = self._connection_for(peer_id, frame.session_id)
@@ -452,6 +474,12 @@ class FlowerBridge:
     def _handle_central_open(self, peer_id: str, session_id: int) -> None:
         lock = self._central_open_locks[peer_id]
         with lock:
+            logger.line(
+                "bridge",
+                "Received Flower OPEN from "
+                f"{peer_id} session {session_id}; connecting upstream "
+                f"{self.cfg.bridge.upstream_host}:{self.cfg.bridge.upstream_port}",
+            )
             existing = self._connection_for(peer_id, session_id)
             if existing is not None:
                 self._send_control(peer_id, FrameType.OPEN_OK, session_id, repeat=2)
