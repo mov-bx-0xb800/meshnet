@@ -16,6 +16,7 @@ from .stream_protocol import (
 class StreamMetrics:
     frames_sent: int = 0
     frames_received: int = 0
+    control_frames_attempted: int = 0
     control_frames_sent: int = 0
     control_frames_received: int = 0
     local_bytes_received: int = 0
@@ -24,6 +25,8 @@ class StreamMetrics:
     stream_send_window_calls: int = 0
     stream_send_window_empty: int = 0
     stream_window_bytes_sent: int = 0
+    data_frames_attempted: int = 0
+    data_bytes_attempted: int = 0
     data_bytes_sent: int = 0
     data_bytes_received: int = 0
     acknowledgements_sent: int = 0
@@ -40,6 +43,7 @@ class StreamMetrics:
         return {
             "frames_sent": self.frames_sent,
             "frames_received": self.frames_received,
+            "control_frames_attempted": self.control_frames_attempted,
             "control_frames_sent": self.control_frames_sent,
             "control_frames_received": self.control_frames_received,
             "local_bytes_received": self.local_bytes_received,
@@ -48,6 +52,8 @@ class StreamMetrics:
             "stream_send_window_calls": self.stream_send_window_calls,
             "stream_send_window_empty": self.stream_send_window_empty,
             "stream_window_bytes_sent": self.stream_window_bytes_sent,
+            "data_frames_attempted": self.data_frames_attempted,
+            "data_bytes_attempted": self.data_bytes_attempted,
             "data_bytes_sent": self.data_bytes_sent,
             "data_bytes_received": self.data_bytes_received,
             "acknowledgements_sent": self.acknowledgements_sent,
@@ -190,6 +196,8 @@ class ReliableStream:
                 for index, sequence in enumerate(missing):
                     flags = FLAG_ACK_REQUIRED if index == len(missing) - 1 else 0
                     payload = self._pending[sequence]
+                    self.metrics.data_frames_attempted += 1
+                    self.metrics.data_bytes_attempted += len(payload)
                     self._send_frame(
                         self.peer_id,
                         StreamFrame(

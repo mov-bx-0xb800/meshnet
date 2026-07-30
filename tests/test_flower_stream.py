@@ -243,6 +243,8 @@ class FlowerBridgeIntegrationTests(unittest.TestCase):
             self.assertEqual(app.recv(1), b"")
 
         self.assertEqual(received, payload)
+        self.assertGreaterEqual(client.metrics.data_bytes_attempted, len(payload))
+        self.assertGreaterEqual(central.metrics.data_bytes_attempted, len(payload))
         self.assertGreaterEqual(client.metrics.data_bytes_sent, len(payload))
         self.assertGreaterEqual(central.metrics.data_bytes_sent, len(payload))
         self.assertEqual(client.metrics.retransmitted_frames, 0)

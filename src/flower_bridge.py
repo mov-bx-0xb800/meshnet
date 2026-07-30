@@ -361,6 +361,7 @@ class FlowerBridge:
                 f"tx {frame_type.name} peer={peer_id} session={session_id} repeat={repeat}",
             )
         for _ in range(repeat):
+            self.metrics.control_frames_attempted += 1
             self._send_frame(peer_id, frame)
             self.metrics.frames_sent += 1
             self.metrics.control_frames_sent += 1
@@ -601,12 +602,7 @@ class FlowerBridge:
         )
 
     def _on_local_data(self, connection: BridgeConnection) -> None:
-        threading.Thread(
-            target=self._send_available_window,
-            args=(connection,),
-            name=f"bridge-send-window-{connection.peer_id}-{connection.session_id}",
-            daemon=True,
-        ).start()
+        self._send_available_window(connection)
 
     def _send_available_window(self, connection: BridgeConnection) -> None:
         if connection.closed.is_set() or not connection.stream.pending_bytes:
