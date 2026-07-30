@@ -180,6 +180,7 @@ while True:
         f"ctrl_rx={number(metrics, 'control_frames_received')}(+{delta('control_frames_received')}) "
         f"local_in={number(metrics, 'local_bytes_received')}B(+{delta('local_bytes_received')}) "
         f"local_out={number(metrics, 'local_bytes_sent')}B(+{delta('local_bytes_sent')}) "
+        f"queued={number(metrics, 'stream_bytes_queued')}B(+{delta('stream_bytes_queued')}) "
         f"data_tx={number(metrics, 'data_bytes_sent')}B(+{delta('data_bytes_sent')}) "
         f"data_rx={number(metrics, 'data_bytes_received')}B(+{delta('data_bytes_received')}) "
         f"ack_tx={number(metrics, 'acknowledgements_sent')}(+{delta('acknowledgements_sent')}) "

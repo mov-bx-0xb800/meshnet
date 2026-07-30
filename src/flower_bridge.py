@@ -450,7 +450,6 @@ class FlowerBridge:
             session_id = self._new_session_id()
             connection = self._make_connection(central_id, session_id, local_socket)
             self._replace_connection(connection)
-            connection.start()
             opened = False
             for _ in range(self.cfg.bridge.max_retries + 1):
                 self._send_control(central_id, FrameType.OPEN, session_id)
@@ -461,6 +460,7 @@ class FlowerBridge:
                 logger.line("bridge", f"Central did not open session {session_id}; closing local Flower socket.")
                 self._remove_connection(connection)
             else:
+                connection.start()
                 self.metrics.sessions_opened += 1
                 logger.line("bridge", f"Flower tunnel session {session_id} is open.")
 

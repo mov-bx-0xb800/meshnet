@@ -20,6 +20,7 @@ class StreamMetrics:
     control_frames_received: int = 0
     local_bytes_received: int = 0
     local_bytes_sent: int = 0
+    stream_bytes_queued: int = 0
     data_bytes_sent: int = 0
     data_bytes_received: int = 0
     acknowledgements_sent: int = 0
@@ -40,6 +41,7 @@ class StreamMetrics:
             "control_frames_received": self.control_frames_received,
             "local_bytes_received": self.local_bytes_received,
             "local_bytes_sent": self.local_bytes_sent,
+            "stream_bytes_queued": self.stream_bytes_queued,
             "data_bytes_sent": self.data_bytes_sent,
             "data_bytes_received": self.data_bytes_received,
             "acknowledgements_sent": self.acknowledgements_sent,
@@ -134,6 +136,7 @@ class ReliableStream:
                 free = self.max_buffer_bytes - self.pending_bytes
                 chunk = data[offset : offset + max(1, free)]
                 self._tx_buffer.extend(chunk)
+                self.metrics.stream_bytes_queued += len(chunk)
                 offset += len(chunk)
                 self._condition.notify_all()
 
