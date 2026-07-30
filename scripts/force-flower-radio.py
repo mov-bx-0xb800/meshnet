@@ -44,6 +44,9 @@ def wait_after_reboot(seconds: int = 45) -> None:
 
 
 def configure_payload(cfg) -> dict:
+    # Keep booleans out of --configure. Some Meshtastic/protobuf paths reject
+    # JSON bools for fields they internally represent as ints. Boolean fields
+    # are still applied below through one-field CLI --set commands.
     return {
         "owner": cfg.app.node_name,
         "owner_short": cfg.app.node_short_name,
@@ -54,18 +57,11 @@ def configure_payload(cfg) -> dict:
                 "hop_limit": cfg.radio.hop_limit,
                 "channel_num": cfg.radio.frequency_slot,
                 "tx_power": cfg.radio.tx_power,
-                "ignore_mqtt": cfg.radio.ignore_mqtt,
-                "config_ok_to_mqtt": cfg.radio.ok_to_mqtt,
-                "tx_enabled": cfg.radio.transmit_enabled,
             },
             "device": {
                 "role": cfg.device.role,
                 "rebroadcast_mode": cfg.device.rebroadcast_mode,
                 "node_info_broadcast_secs": cfg.device.node_info_broadcast_secs,
-                "serial_enabled": cfg.device.serial_enabled,
-            },
-            "power": {
-                "is_power_saving": cfg.device.is_power_saving,
             },
         },
     }
@@ -109,8 +105,15 @@ def main() -> int:
         ("lora.modem_preset", cfg.radio.modem_preset),
         ("lora.hop_limit", cfg.radio.hop_limit),
         ("lora.channel_num", cfg.radio.frequency_slot),
+        ("lora.tx_power", cfg.radio.tx_power),
+        ("lora.ignore_mqtt", cfg.radio.ignore_mqtt),
+        ("lora.config_ok_to_mqtt", cfg.radio.ok_to_mqtt),
+        ("lora.tx_enabled", cfg.radio.transmit_enabled),
         ("device.role", cfg.device.role),
         ("device.rebroadcast_mode", cfg.device.rebroadcast_mode),
+        ("device.node_info_broadcast_secs", cfg.device.node_info_broadcast_secs),
+        ("device.serial_enabled", cfg.device.serial_enabled),
+        ("power.is_power_saving", cfg.device.is_power_saving),
     ]
 
     for field, value in field_updates:
