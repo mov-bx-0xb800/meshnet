@@ -74,15 +74,17 @@ The runner enforces that profile even when a node's local `config.flower.yaml`
 still contains older bridge timing or retry values. It also restores only the
 systemd services that were active before the test.
 
-The two nodes must use the same git commit and the same Meshtastic firmware
+The two nodes should use the same git commit and the same Meshtastic firmware
 line. The full run has a packet-and-poll schedule floor of about `61.2 minutes`
 and will take longer with startup, scheduler guards, retransmissions, or poor
 RF. Status rows show acknowledged queue progress, current TX/RX rate, and an
 ETA for the current queued application message.
 
 The benchmark hello carries the local Git commit and detected radio firmware.
-A mismatch is rejected before model DATA starts. `ALLOW_PEER_MISMATCH=1` exists
-only for deliberate diagnostics; its result is not an acceptance run.
+A mismatch is logged as a warning by default so it cannot terminate the
+central runner immediately after the client connects. For a deliberately
+strict acceptance run, set `ALLOW_PEER_MISMATCH=0`; a mismatch will then be
+rejected before model DATA starts.
 
 For a short transport smoke test:
 
@@ -126,6 +128,16 @@ PUBLISH_FLOWER_LOGS=1 ./scripts/push-latest-flower-logs.sh central
 
 That command uses a log branch by default. Direct-to-base publication requires
 the additional explicit `AUTO_LOG_DIRECT_PUSH=1`.
+
+To serve the newest archive from the central hotspot address:
+
+```bash
+SERVE=1 ./scripts/export-latest-flower-logs.sh central
+```
+
+The default download root is `http://172.20.10.2:8765/` and the HTTP server
+binds to all local interfaces. Override those independently with `SERVE_HOST`
+and `SERVE_BIND` if the network changes.
 
 ## Output
 

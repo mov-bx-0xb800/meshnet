@@ -79,7 +79,7 @@ class FlowerRoundBenchmarkPlanTests(unittest.TestCase):
 
 
 class FlowerRoundBenchmarkProtocolTests(unittest.TestCase):
-    def test_peer_compatibility_rejects_git_and_firmware_mismatches(self) -> None:
+    def test_peer_compatibility_reports_git_and_firmware_mismatches(self) -> None:
         errors = benchmark.peer_compatibility_errors(
             local_git_commit="new",
             local_firmware_version="2.7.15",

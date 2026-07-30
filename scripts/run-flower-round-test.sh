@@ -61,7 +61,10 @@ BRIDGE_CONTROL_TIMEOUT_SECONDS="${BRIDGE_CONTROL_TIMEOUT_SECONDS:-10}"
 BRIDGE_MAX_RETRIES="${BRIDGE_MAX_RETRIES:-8}"
 BRIDGE_FRAME_INTERVAL_MS="${BRIDGE_FRAME_INTERVAL_MS:-400}"
 BRIDGE_POLL_INTERVAL_MS="${BRIDGE_POLL_INTERVAL_MS:-500}"
-ALLOW_PEER_MISMATCH="${ALLOW_PEER_MISMATCH:-0}"
+# Firmware and Git revisions are useful diagnostics, but a mismatch must not
+# make the central runner look like it crashed as soon as the client connects.
+# Set this to 0 only for a deliberately strict acceptance run.
+ALLOW_PEER_MISMATCH="${ALLOW_PEER_MISMATCH:-1}"
 STATUS_INTERVAL="${STATUS_INTERVAL:-10}"
 CAPTURE_RADIO_INFO="${CAPTURE_RADIO_INFO:-1}"
 EXPORT_LOG_ARCHIVE="${EXPORT_LOG_ARCHIVE:-1}"
@@ -739,6 +742,11 @@ echo "[run] role=${ROLE} config=${CONFIG}"
 echo "[run] offline_mode=1 (loopback TCP + attached LoRa only; no auto-publish)"
 echo "[run] rounds=${ROUNDS} logical_clients=${LOGICAL_CLIENTS} evaluate=${EVALUATE}"
 echo "[run] bridge_payload_bytes=${BRIDGE_PAYLOAD_BYTES} bridge_window_size=${BRIDGE_WINDOW_SIZE} ack_timeout_seconds=${BRIDGE_ACK_TIMEOUT_SECONDS} control_timeout_seconds=${BRIDGE_CONTROL_TIMEOUT_SECONDS} max_retries=${BRIDGE_MAX_RETRIES} frame_interval_ms=${BRIDGE_FRAME_INTERVAL_MS} poll_interval_ms=${BRIDGE_POLL_INTERVAL_MS}"
+if [[ "${ALLOW_PEER_MISMATCH}" == "1" || "${ALLOW_PEER_MISMATCH}" == "true" ]]; then
+  echo "[run] peer_match=warn (firmware/Git mismatches are logged and the run continues)"
+else
+  echo "[run] peer_match=strict (firmware/Git mismatches reject the connection)"
+fi
 echo "[run] status_interval=${STATUS_INTERVAL}"
 if [[ -n "${WEIGHTS_NPZ}" ]]; then
   echo "[run] weights_npz=${WEIGHTS_NPZ}"

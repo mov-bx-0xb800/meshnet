@@ -8,7 +8,8 @@ RUN_DIR_ARG="${2:-}"
 EXPORT_DIR="${EXPORT_DIR:-${ROOT_DIR}/exports}"
 SERVE="${SERVE:-0}"
 PORT="${PORT:-8765}"
-SERVE_BIND="${SERVE_BIND:-127.0.0.1}"
+SERVE_BIND="${SERVE_BIND:-0.0.0.0}"
+SERVE_HOST="${SERVE_HOST:-172.20.10.2}"
 
 if [[ ! -x "${PY}" ]]; then
   PY="$(command -v python3)"
@@ -78,7 +79,9 @@ PY
 print_urls() {
   local archive_name="$1"
   local hostnames=()
-  if [[ "${SERVE_BIND}" != "0.0.0.0" && "${SERVE_BIND}" != "::" ]]; then
+  if [[ -n "${SERVE_HOST}" ]]; then
+    hostnames=("${SERVE_HOST}")
+  elif [[ "${SERVE_BIND}" != "0.0.0.0" && "${SERVE_BIND}" != "::" ]]; then
     hostnames=("${SERVE_BIND}")
   fi
   if [[ "${#hostnames[@]}" -eq 0 ]] && command -v hostname >/dev/null 2>&1; then
@@ -95,6 +98,7 @@ print_urls() {
     hostnames=("127.0.0.1")
   fi
   for ip in "${hostnames[@]}"; do
+    echo "[export] browse=http://${ip}:${PORT}/"
     echo "[export] url=http://${ip}:${PORT}/${archive_name}"
   done
 }

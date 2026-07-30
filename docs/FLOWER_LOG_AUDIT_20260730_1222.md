@@ -106,12 +106,14 @@ to all interfaces without authentication.
 - Record and restore only the systemd services that were active before the
   benchmark.
 - Exchange the Git commit and detected Meshtastic firmware in the benchmark
-  hello and refuse mismatched peers by default.
+  hello. A follow-up keeps mismatches visible but warns and continues by
+  default because rejecting them made the central runner exit immediately
+  after the client connected; strict acceptance remains opt-in.
 - Ignore runtime logs by default. Publishing now requires
   `PUBLISH_FLOWER_LOGS=1`, direct-to-base push is off by default, and local logs
   are never deleted after a push.
-- Bind the optional archive server to `127.0.0.1` by default and warn when an
-  operator explicitly exposes it to the network.
+- Serve the optional archive on the established central hotspot endpoint,
+  `http://172.20.10.2:8765/`, while retaining explicit host/bind overrides.
 
 ## Remaining Field Action
 
@@ -121,8 +123,9 @@ The radios still run different firmware:
 - client: `2.5.20.4c97351`
 
 They also use different configured conducted powers, 23 dBm and 24 dBm.
-Neither mismatch caused packet loss in this capture. The updated runner now
-rejects the firmware mismatch, so both radios must be put on the same supported
-firmware line before the next acceptance run. Transmit power must be chosen
-from measured antenna gain and cable loss; the repo cannot prove EIRP
-compliance from the YAML number alone.
+Neither mismatch caused packet loss in this capture. The runner warns and
+continues for diagnostics; use `ALLOW_PEER_MISMATCH=0` to reject mismatches for
+a strict acceptance run. Both radios should still be put on the same supported
+firmware line before acceptance. Transmit power must be chosen from measured
+antenna gain and cable loss; the repo cannot prove EIRP compliance from the
+YAML number alone.
