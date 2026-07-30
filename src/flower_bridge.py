@@ -123,6 +123,7 @@ class BridgeConnection:
         self.expected_poll_sequence = 0
         self.last_poll_sequence = 0
         self.last_poll_bytes = 0
+        self.metrics = metrics
         self._on_local_eof = on_local_eof
         self._on_error = on_error
         queue_slots = max(8, cfg.bridge.max_buffer_bytes // cfg.bridge.payload_bytes)
@@ -212,6 +213,7 @@ class BridgeConnection:
                     self.local_eof.set()
                     self._on_local_eof(self)
                     return
+                self.metrics.local_bytes_received += len(data)
                 self.stream.queue_bytes(data)
         except (OSError, ReliableStreamError) as exc:
             if not self.closed.is_set():
@@ -231,6 +233,7 @@ class BridgeConnection:
                         pass
                     return
                 self.socket.sendall(data)
+                self.metrics.local_bytes_sent += len(data)
         except OSError as exc:
             if not self.closed.is_set():
                 self._on_error(self, exc)
@@ -357,6 +360,7 @@ class FlowerBridge:
         for _ in range(repeat):
             self._send_frame(peer_id, frame)
             self.metrics.frames_sent += 1
+            self.metrics.control_frames_sent += 1
 
     def _on_transport_payload(self, peer_id: str, payload: bytes) -> None:
         try:
@@ -388,6 +392,7 @@ class FlowerBridge:
             return
 
         self.metrics.frames_received += 1
+        self.metrics.control_frames_received += 1
         if frame.frame_type == FrameType.OPEN and self.is_central:
             threading.Thread(
                 target=self._handle_central_open,
@@ -690,8 +695,17 @@ class FlowerBridge:
             if not self._running.is_set():
                 return
             snapshot = self.metrics.snapshot()
+            snapshot.update(self._connection_metrics())
             logger.line("bridge-metrics", json.dumps(snapshot, sort_keys=True))
             self._write_metrics(snapshot)
+
+    def _connection_metrics(self) -> dict[str, int]:
+        with self._connections_lock:
+            connections = list(self._connections.values())
+        return {
+            "active_connections": len(connections),
+            "pending_bytes": sum(connection.stream.pending_bytes for connection in connections),
+        }
 
     def _prune_seen_sessions(self) -> None:
         cutoff = time.time() - 24 * 60 * 60

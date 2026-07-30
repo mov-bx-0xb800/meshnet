@@ -16,6 +16,10 @@ from .stream_protocol import (
 class StreamMetrics:
     frames_sent: int = 0
     frames_received: int = 0
+    control_frames_sent: int = 0
+    control_frames_received: int = 0
+    local_bytes_received: int = 0
+    local_bytes_sent: int = 0
     data_bytes_sent: int = 0
     data_bytes_received: int = 0
     acknowledgements_sent: int = 0
@@ -32,6 +36,10 @@ class StreamMetrics:
         return {
             "frames_sent": self.frames_sent,
             "frames_received": self.frames_received,
+            "control_frames_sent": self.control_frames_sent,
+            "control_frames_received": self.control_frames_received,
+            "local_bytes_received": self.local_bytes_received,
+            "local_bytes_sent": self.local_bytes_sent,
             "data_bytes_sent": self.data_bytes_sent,
             "data_bytes_received": self.data_bytes_received,
             "acknowledgements_sent": self.acknowledgements_sent,
