@@ -9,7 +9,7 @@ import threading
 import time
 
 
-DEFAULT_MODEL_BYTES = 47_164
+DEFAULT_MODEL_BYTES = 48_712
 
 
 def build_parser() -> argparse.ArgumentParser:

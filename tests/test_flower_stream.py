@@ -234,7 +234,7 @@ class FlowerBridgeIntegrationTests(unittest.TestCase):
         self.addCleanup(central.stop)
         wait_for_port(self.bridge_port)
 
-        payload = bytes((index * 31) % 256 for index in range(47_164))
+        payload = bytes((index * 31) % 256 for index in range(48_712))
         with socket.create_connection(("127.0.0.1", self.bridge_port), timeout=2) as app:
             app.settimeout(15)
             app.sendall(payload)
