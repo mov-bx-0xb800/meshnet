@@ -141,7 +141,7 @@ start_status_log() {
     return
   fi
   echo "[run] concise status every ${STATUS_INTERVAL}s; set STATUS_INTERVAL=0 to hide it"
-  "${PY}" - "${METRICS_FILE}" "${STATUS_INTERVAL}" <<'PY' &
+  "${PY}" - "${METRICS_FILE}" "${STATUS_INTERVAL}" "${ROLE}" <<'PY' &
 import json
 import sys
 import time
@@ -149,10 +149,57 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 interval = float(sys.argv[2])
+role = sys.argv[3]
 previous = {}
 
 def number(metrics, key):
     return int(metrics.get(key, 0) or 0)
+
+def diagnose(metrics):
+    opened = number(metrics, "sessions_opened")
+    conns = number(metrics, "active_connections")
+    local_in = number(metrics, "local_bytes_received")
+    queued = number(metrics, "stream_bytes_queued")
+    windows = number(metrics, "stream_send_window_calls")
+    active = number(metrics, "stream_send_window_active")
+    errors = number(metrics, "stream_send_window_errors")
+    data_try = number(metrics, "data_bytes_attempted")
+    data_tx = number(metrics, "data_bytes_sent")
+    data_rx = number(metrics, "data_bytes_received")
+    local_out = number(metrics, "local_bytes_sent")
+    ctrl_tx = number(metrics, "control_frames_sent")
+    ctrl_rx = number(metrics, "control_frames_received")
+    resets = number(metrics, "sessions_reset")
+
+    if resets:
+        return "session_reset"
+    if opened == 0 or conns == 0:
+        if ctrl_tx and not ctrl_rx:
+            return "control_tx_no_peer_rx"
+        return "tunnel_not_open"
+    if role == "master" and local_in == 0 and data_rx == 0:
+        return "central_waiting_for_client_hello"
+    if role == "slave" and local_in == 0:
+        return "client_no_local_tcp_bytes"
+    if local_in > 0 and queued == 0:
+        return "local_bytes_not_queued"
+    if queued > 0 and windows == 0:
+        return "queued_no_send_window"
+    if windows > 0 and active > 0 and data_try == 0:
+        return "send_window_entered_no_data_try"
+    if errors:
+        return "send_window_error"
+    if windows > 0 and data_try == 0:
+        return "send_window_empty_or_closed"
+    if data_try > data_tx:
+        return "radio_send_blocked_or_failed"
+    if data_tx > 0 and data_rx == 0 and local_out == 0:
+        return "data_tx_no_peer_rx"
+    if data_rx > 0 and local_out == 0:
+        return "data_rx_not_written_to_tcp"
+    if local_out > 0:
+        return "tcp_bytes_flowing"
+    return "active_waiting"
 
 while True:
     time.sleep(interval)
@@ -171,6 +218,7 @@ while True:
     uptime = metrics.get("uptime_seconds", 0)
     print(
         "[status] "
+        f"diagnosis={diagnose(metrics)} "
         f"up={uptime}s "
         f"conns={number(metrics, 'active_connections')} "
         f"pending={number(metrics, 'pending_bytes')}B "
@@ -183,7 +231,9 @@ while True:
         f"local_out={number(metrics, 'local_bytes_sent')}B(+{delta('local_bytes_sent')}) "
         f"queued={number(metrics, 'stream_bytes_queued')}B(+{delta('stream_bytes_queued')}) "
         f"windows={number(metrics, 'stream_send_window_calls')}(+{delta('stream_send_window_calls')}) "
+        f"send_active={number(metrics, 'stream_send_window_active')} "
         f"win_empty={number(metrics, 'stream_send_window_empty')}(+{delta('stream_send_window_empty')}) "
+        f"win_errors={number(metrics, 'stream_send_window_errors')}(+{delta('stream_send_window_errors')}) "
         f"win_bytes={number(metrics, 'stream_window_bytes_sent')}B(+{delta('stream_window_bytes_sent')}) "
         f"data_try={number(metrics, 'data_bytes_attempted')}B(+{delta('data_bytes_attempted')}) "
         f"data_tx={number(metrics, 'data_bytes_sent')}B(+{delta('data_bytes_sent')}) "

@@ -602,13 +602,23 @@ class FlowerBridge:
         )
 
     def _on_local_data(self, connection: BridgeConnection) -> None:
+        logger.line(
+            "bridge-data",
+            f"local queued peer={connection.peer_id} session={connection.session_id} "
+            f"pending={connection.stream.pending_bytes}B",
+        )
         self._send_available_window(connection)
 
     def _send_available_window(self, connection: BridgeConnection) -> None:
         if connection.closed.is_set() or not connection.stream.pending_bytes:
             return
         try:
-            connection.stream.send_window()
+            sent = connection.stream.send_window()
+            logger.line(
+                "bridge-data",
+                f"send_window peer={connection.peer_id} session={connection.session_id} "
+                f"sent={sent}B pending={connection.stream.pending_bytes}B",
+            )
         except Exception as exc:
             self._connection_error(connection, exc)
 

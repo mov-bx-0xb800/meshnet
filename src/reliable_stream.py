@@ -23,7 +23,9 @@ class StreamMetrics:
     local_bytes_sent: int = 0
     stream_bytes_queued: int = 0
     stream_send_window_calls: int = 0
+    stream_send_window_active: int = 0
     stream_send_window_empty: int = 0
+    stream_send_window_errors: int = 0
     stream_window_bytes_sent: int = 0
     data_frames_attempted: int = 0
     data_bytes_attempted: int = 0
@@ -50,7 +52,9 @@ class StreamMetrics:
             "local_bytes_sent": self.local_bytes_sent,
             "stream_bytes_queued": self.stream_bytes_queued,
             "stream_send_window_calls": self.stream_send_window_calls,
+            "stream_send_window_active": self.stream_send_window_active,
             "stream_send_window_empty": self.stream_send_window_empty,
+            "stream_send_window_errors": self.stream_send_window_errors,
             "stream_window_bytes_sent": self.stream_window_bytes_sent,
             "data_frames_attempted": self.data_frames_attempted,
             "data_bytes_attempted": self.data_bytes_attempted,
@@ -164,6 +168,16 @@ class ReliableStream:
 
     def send_window(self) -> int:
         self.metrics.stream_send_window_calls += 1
+        self.metrics.stream_send_window_active += 1
+        try:
+            return self._send_window()
+        except Exception:
+            self.metrics.stream_send_window_errors += 1
+            raise
+        finally:
+            self.metrics.stream_send_window_active -= 1
+
+    def _send_window(self) -> int:
         with self._send_lock:
             with self._condition:
                 if self._closed:
