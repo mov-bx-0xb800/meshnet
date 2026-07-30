@@ -10,12 +10,15 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi/meshnet
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONFAULTHANDLER=1
 ExecStart=/home/pi/meshnet/.venv/bin/python -m src.cli bridge --config /home/pi/meshnet/config.flower.yaml
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=20
 NoNewPrivileges=true
-PrivateTmp=true
+# Do not enable PrivateTmp here. Meshnet's serial-owner lock lives in the
+# shared temporary directory so service and manually started runtimes contend
+# on the same lock before either opens the USB radio.
 
 [Install]
 WantedBy=multi-user.target

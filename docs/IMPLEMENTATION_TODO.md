@@ -21,8 +21,8 @@ This is the working checklist for turning the current demo-feasible bridge into 
 - Keep bridge configs on `SHORT_FAST` unless `SHORT_TURBO` gets its own safe-slot validator.
 - Explicitly reject `SHORT_TURBO` slot `8`.
 - If `SHORT_TURBO` is enabled later, restrict to calculated safe slots, likely `2..7`, and require RF margin proof.
-- Clear and verify Meshtastic `override_frequency`.
-- Clear and verify Meshtastic `frequency_offset`.
+- [x] Clear and verify Meshtastic `override_frequency`.
+- [x] Clear and verify Meshtastic `frequency_offset`.
 - Show final computed frequency and occupied band in `doctor`.
 - Add a warning/failure if live radio config reports an override or offset.
 - Add a per-radio airtime ledger before relying on any `<1%` duty-cycle path.
@@ -90,7 +90,7 @@ This is the working checklist for turning the current demo-feasible bridge into 
 
 - Computed EIRP is below limit with margin.
 - Occupied emission stays inside the intended band with margin.
-- No `override_frequency` or `frequency_offset` survives setup.
+- [x] No `override_frequency` or `frequency_offset` survives setup.
 - Live `doctor` output matches expected region, preset, slot, power, channel, role, and MQTT disablement.
 - Real-radio benchmark passes in both directions.
 - No normal operator control can move the device into an unsafe RF configuration.

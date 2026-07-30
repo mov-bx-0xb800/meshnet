@@ -13,7 +13,7 @@ from . import logger
 from .config import MeshConfig
 from .errors import MeshNetError
 from .master import MasterNode
-from .protocol import Envelope, decode_envelope, payload_hash, verify_envelope
+from .protocol import Envelope, payload_hash
 
 
 @dataclass
@@ -54,7 +54,13 @@ class TelegramBridge:
     async def start(self) -> None:
         try:
             from telegram import Update
-            from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+            from telegram.ext import (
+                ApplicationBuilder,
+                CommandHandler,
+                ContextTypes,
+                MessageHandler,
+                filters,
+            )
         except Exception as exc:
             raise RuntimeError(
                 "python-telegram-bot is not installed. Run ./install.sh first."
@@ -62,6 +68,8 @@ class TelegramBridge:
 
         if self.cfg.app.role != "master":
             raise RuntimeError("Telegram bridge only runs with the master config.")
+        if not self.cfg.telegram.enabled:
+            raise RuntimeError("Telegram is disabled by telegram.enabled.")
         if not self.cfg.telegram.bot_token:
             raise RuntimeError("telegram.bot_token is required. Set TELEGRAM_BOT_TOKEN in .env.")
         if not self.cfg.telegram.allowed_chat_id:
@@ -72,8 +80,8 @@ class TelegramBridge:
         logger.line("tg", "Telegram bridge configured.")
         logger.line("tg", "Connecting radio...")
         self.loop = asyncio.get_running_loop()
+        self.node.add_accepted_handler(self._on_mesh_packet)
         self.node.connect()
-        self.node.radio.add_handler(self._on_mesh_packet)
 
         logger.line("tg", "Connecting bot...")
         try:
@@ -331,11 +339,11 @@ class TelegramBridge:
         self.node.close()
         node = MasterNode(self.cfg, "tg")
         try:
+            node.add_accepted_handler(self._on_mesh_packet)
             node.connect()
         except Exception:
             node.close()
             raise
-        node.radio.add_handler(self._on_mesh_packet)
         self.node = node
         logger.line("tg", "Radio reconnected.")
 
@@ -395,15 +403,7 @@ class TelegramBridge:
             self.stats.last_mesh_out_at = time.time()
         await self._reply(update, f"TX text -> {envelope.dst} id={envelope.id}")
 
-    def _on_mesh_packet(self, text: str, packet: dict[str, Any]) -> None:
-        try:
-            env = decode_envelope(text)
-        except Exception:
-            return
-        ok, _ = verify_envelope(env, self.cfg)
-        if not ok or env.src == self.cfg.app.node_id:
-            return
-
+    def _on_mesh_packet(self, env: Envelope, packet: dict[str, Any]) -> None:
         with self._stats_lock:
             self.stats.mesh_messages_in += 1
             self.stats.last_mesh_in_at = time.time()

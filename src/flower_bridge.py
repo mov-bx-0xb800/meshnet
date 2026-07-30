@@ -14,7 +14,12 @@ from typing import Callable, Protocol
 from . import logger
 from .config import MeshConfig
 from .errors import MeshNetError, as_meshnet_error, log_meshnet_error
-from .radio import BROADCAST_ADDR, RadioClient, packet_from_mesh_id
+from .radio import (
+    BROADCAST_ADDR,
+    RadioClient,
+    packet_from_mesh_id,
+    radio_config_mismatches,
+)
 from .reliable_stream import ReliableStream, ReliableStreamError, StreamMetrics
 from .stream_protocol import (
     FLAG_EMPTY,
@@ -26,7 +31,6 @@ from .stream_protocol import (
     encode_frame,
     is_stream_payload,
 )
-
 
 OPEN_OK_REPEATS = 5
 RADIO_ACK_CONTROL_TYPES = {FrameType.OPEN, FrameType.OPEN_OK, FrameType.RESET}
@@ -83,6 +87,22 @@ class RadioFrameTransport:
     def start(self) -> None:
         self.radio.add_binary_handler(self._on_binary)
         self.radio.connect(no_nodes=False)
+        actual = self.radio.actual_config_summary()
+        mismatches = radio_config_mismatches(self.cfg, actual)
+        if mismatches:
+            self.radio.close()
+            raise MeshNetError(
+                "BRIDGE_RADIO_CONFIG_MISMATCH",
+                "bridge",
+                "the attached radio does not match the Flower configuration",
+                "Run force-flower-radio.py or meshnet setup, then verify the radio before retrying.",
+                retryable=False,
+                details={"mismatches": mismatches},
+            )
+        logger.line(
+            "bridge-radio",
+            "verified preset, region, slot, offsets, TX power, role, MQTT, and channel",
+        )
         effective = "broadcast" if self._uses_broadcast_destination() else "direct"
         logger.line(
             "bridge-radio",
@@ -303,7 +323,6 @@ class BridgeConnection:
         if self.remote_eof.is_set():
             return
         self.remote_eof.set()
-        self._rx_queue.put(None)
 
     def begin_completed_close(self) -> bool:
         """Claim teardown once both TCP directions have completed."""
@@ -351,6 +370,12 @@ class BridgeConnection:
                 try:
                     data = self._rx_queue.get(timeout=0.5)
                 except queue.Empty:
+                    if self.remote_eof.is_set():
+                        try:
+                            self.socket.shutdown(socket.SHUT_WR)
+                        except OSError:
+                            pass
+                        return
                     continue
                 if data is None:
                     try:
@@ -388,6 +413,8 @@ class FlowerBridge:
             peer.app_id: threading.Lock() for peer in cfg.network.peers
         }
         self._seen_sessions: dict[tuple[str, int], float] = {}
+        self._seen_sessions_lock = threading.Lock()
+        self._metrics_write_lock = threading.Lock()
 
     @property
     def is_central(self) -> bool:
@@ -654,7 +681,8 @@ class FlowerBridge:
                 finally:
                     existing.open_event.set()
                 return
-            seen_at = self._seen_sessions.get((peer_id, session_id))
+            with self._seen_sessions_lock:
+                seen_at = self._seen_sessions.get((peer_id, session_id))
             if seen_at is not None:
                 self._send_control(peer_id, FrameType.RESET, session_id, payload=b"stale session")
                 return
@@ -669,8 +697,9 @@ class FlowerBridge:
                 return
             connection = self._make_connection(peer_id, session_id, upstream)
             self._replace_connection(connection)
-            self._seen_sessions[(peer_id, session_id)] = time.time()
-            self._prune_seen_sessions()
+            with self._seen_sessions_lock:
+                self._seen_sessions[(peer_id, session_id)] = time.time()
+                self._prune_seen_sessions_locked()
             connection.start()
             self.metrics.sessions_opened += 1
             self._send_control(
@@ -892,7 +921,7 @@ class FlowerBridge:
             "pending_bytes": sum(connection.stream.pending_bytes for connection in connections),
         }
 
-    def _prune_seen_sessions(self) -> None:
+    def _prune_seen_sessions_locked(self) -> None:
         cutoff = time.time() - 24 * 60 * 60
         stale = [key for key, seen_at in self._seen_sessions.items() if seen_at < cutoff]
         for key in stale:
@@ -901,11 +930,15 @@ class FlowerBridge:
     def _write_metrics(self, snapshot: dict[str, int | float]) -> None:
         path = self.cfg.path.with_suffix(".bridge-metrics.json")
         temporary = path.with_suffix(path.suffix + ".tmp")
-        try:
-            temporary.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
-            temporary.replace(path)
-        except OSError as exc:
-            logger.line("bridge-metrics", f"Could not write {path}: {exc}")
+        with self._metrics_write_lock:
+            try:
+                temporary.write_text(
+                    json.dumps(snapshot, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
+                temporary.replace(path)
+            except OSError as exc:
+                logger.line("bridge-metrics", f"Could not write {path}: {exc}")
 
     @staticmethod
     def _new_session_id() -> int:

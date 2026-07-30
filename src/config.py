@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import yaml
-
 
 VALID_ROLES = {"master", "slave"}
 VALID_PSK_MODES = {"derived", "base64", "none"}
@@ -37,6 +38,18 @@ VALID_REBROADCAST_MODES = {
 }
 DEFAULT_REGION = "MY_919"
 SUPPORTED_MALAYSIA_REGIONS = {"MY_919", "MY_433"}
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    if normalized == "localhost":
+        return True
+    if normalized.startswith("[") and normalized.endswith("]"):
+        normalized = normalized[1:-1]
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -137,7 +150,7 @@ class TelegramConfig:
 
     @property
     def configured(self) -> bool:
-        return bool(self.bot_token and self.allowed_chat_id)
+        return bool(self.enabled and self.bot_token and self.allowed_chat_id)
 
 
 @dataclass(frozen=True)
@@ -530,7 +543,7 @@ def validate_config(cfg: MeshConfig) -> None:
     if len(peer_mesh_ids) != len(set(peer_mesh_ids)):
         raise ValueError("network.peers mesh_id values must be unique")
     for mesh_id in peer_mesh_ids:
-        if not mesh_id.startswith("!") or len(mesh_id) != 9:
+        if re.fullmatch(r"![0-9a-f]{8}", mesh_id) is None:
             raise ValueError("network.peers mesh_id must look like !a1b2c3d4")
 
     if cfg.bridge.enabled:
@@ -540,6 +553,10 @@ def validate_config(cfg: MeshConfig) -> None:
             raise ValueError("bridge.enabled requires a pinned mesh_id for every peer")
         if cfg.app.role == "slave" and len(cfg.network.peers) != 1:
             raise ValueError("a bridge client must configure exactly one central peer")
+        if not _is_loopback_host(cfg.bridge.listen_host):
+            raise ValueError("bridge.listen_host must be a loopback address")
+        if not _is_loopback_host(cfg.bridge.upstream_host):
+            raise ValueError("bridge.upstream_host must be a loopback address")
         if not 1 <= cfg.bridge.listen_port <= 65535:
             raise ValueError("bridge.listen_port must be between 1 and 65535")
         if not 1 <= cfg.bridge.upstream_port <= 65535:

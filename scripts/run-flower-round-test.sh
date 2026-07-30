@@ -22,7 +22,10 @@ if [[ ! -f "${CONFIG}" ]]; then
 fi
 
 ROLE="$("${PY}" - "${CONFIG}" <<'PY'
-import sys, yaml
+import ipaddress
+import sys
+
+import yaml
 with open(sys.argv[1], encoding="utf-8") as fh:
     cfg = yaml.safe_load(fh)
 print(cfg["app"]["role"])
@@ -114,7 +117,6 @@ telegram = cfg.get("telegram", {})
 network = cfg.get("network", {})
 bridge = cfg.get("bridge", {})
 role = cfg.get("app", {}).get("role")
-loopback_hosts = {"127.0.0.1", "localhost", "::1"}
 placeholder_mesh_ids = {
     "",
     "!00000001",
@@ -124,13 +126,24 @@ placeholder_mesh_ids = {
     "!CENTRAL_RADIO_ID",
 }
 
+def is_loopback(host):
+    normalized = str(host or "").strip().lower()
+    if normalized == "localhost":
+        return True
+    if normalized.startswith("[") and normalized.endswith("]"):
+        normalized = normalized[1:-1]
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
 if role not in {"master", "slave"}:
     errors.append("app.role must be master or slave")
 if bridge.get("enabled") is not True:
     errors.append("bridge.enabled must be true")
-if bridge.get("listen_host") not in loopback_hosts:
+if not is_loopback(bridge.get("listen_host")):
     errors.append("bridge.listen_host must be loopback only, usually 127.0.0.1")
-if bridge.get("upstream_host") not in loopback_hosts:
+if not is_loopback(bridge.get("upstream_host")):
     errors.append("bridge.upstream_host must be loopback only, usually 127.0.0.1")
 if radio.get("ignore_mqtt") is not True:
     errors.append("radio.ignore_mqtt must be true")
@@ -804,6 +817,8 @@ PEER_ARGS=(
 )
 if [[ "${ALLOW_PEER_MISMATCH}" == "1" || "${ALLOW_PEER_MISMATCH}" == "true" ]]; then
   PEER_ARGS+=(--allow-peer-mismatch)
+else
+  PEER_ARGS+=(--strict-peer-match)
 fi
 if [[ "${EVALUATE}" == "0" || "${EVALUATE}" == "false" ]]; then
   BENCH_ARGS+=(--no-evaluate)

@@ -1,11 +1,15 @@
 # Meshtastic Compliance Workbench
 
-Last refreshed: 2026-07-30
+Last refreshed: 2026-07-31
 
 This folder is the working place for the Meshtastic / Flower-over-LoRa compliance and feasibility audit. It is intentionally practical: facts, restrictions, calculations, and the TODO list we will update as the implementation changes.
 
 Documents:
 
+- `TASIK_FLOWER_LORA_FULL_AUDIT_20260731.md` - consolidated current transport
+  source of truth: exact Flower/protobuf sizes, physical benchmark chronology,
+  measured goodput, full-suite timing, clustering implications, compliance
+  boundaries, and acceptance gates.
 - `RF_COMPLIANCE_WORKING_NOTES.md` - Malaysia SRD constraints, current implementation pass/fail, and forbidden configurations.
 - `FLOWER_LORA_CAPACITY_MODEL.md` - model size, packet count, timing, and `SHORT_FAST` versus `SHORT_TURBO` impact.
 - `IMPLEMENTATION_TODO.md` - concrete work items before any field or production use.

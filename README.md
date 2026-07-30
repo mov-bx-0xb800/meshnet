@@ -392,6 +392,8 @@ MeshNet also rejects encoded envelopes above 230 characters. This is intentional
 ## Telegram
 
 Telegram is optional and requires internet on the master Pi.
+Set `telegram.enabled: false` to keep it disabled even when credentials remain
+in the environment.
 
 1. Create a Telegram bot with BotFather.
 2. Put the bot token in `.env`, not in tracked YAML:
@@ -427,6 +429,17 @@ meshnet master
 ```
 
 If Telegram is configured, `meshnet master` starts the Telegram bridge and the master runtime checks in one process. If Telegram is missing or cannot start, MeshNet logs the reason, retries startup, then falls back to the normal master runtime. Do not run a separate Telegram process against the same USB radio.
+
+The unified runtime forwards only messages accepted by MeshNet's complete
+network, HMAC, pinned-radio-source, destination, and duplicate checks. Telegram
+does not observe or publish rejected raw radio packets.
+
+Every MeshNet runtime also reads the attached radio configuration before
+carrying application traffic. If the preset, region, frequency slot,
+override/offset, channel, PSK, device role, MQTT state, or TX settings differ
+from the active YAML, startup stops with `RADIO_CONFIG_MISMATCH`; run
+`meshnet setup` and `meshnet doctor` instead of operating on stale firmware
+settings.
 
 Supported Telegram commands:
 

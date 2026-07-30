@@ -4,13 +4,14 @@
 Description=MeshNet Meshtastic Runtime
 Wants=network-online.target
 After=network-online.target
-Conflicts=meshnet-telegram.service
+Conflicts=meshnet-telegram.service meshnet-flower-bridge.service
 
 [Service]
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/meshnet
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONFAULTHANDLER=1
 ExecStart=/home/pi/meshnet/.venv/bin/python -m src.cli run --config /home/pi/meshnet/config.master.yaml
 Restart=on-failure
 RestartSec=5

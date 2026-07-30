@@ -6,16 +6,19 @@ import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 from unittest.mock import MagicMock, patch
 
 import yaml
 
-from src.config import load_config
+from src.config import load_config, validate_config
+from src.errors import MeshNetError
 from src.flower_bridge import (
     BROADCAST_ADDR,
     RADIO_DESTINATION_MODE_ENV,
+    BridgeConnection,
     FlowerBridge,
     FrameSendReport,
     RadioFrameTransport,
@@ -437,6 +440,30 @@ class FlowerBridgeIntegrationTests(unittest.TestCase):
         self.assertEqual(fake.calls[0]["destination_id"], BROADCAST_ADDR)
         self.assertFalse(fake.calls[0]["want_ack"])
 
+    def test_radio_transport_rejects_mismatched_attached_radio_at_start(self) -> None:
+        cfg = self._config(
+            name="central-radio-check",
+            node_id="central-001",
+            role="master",
+            master_id="central-001",
+            slave_id="client-001",
+            peer_id="client-001",
+            peer_mesh="!00000001",
+            listen_port=free_port(),
+            upstream_port=self.echo_port,
+        )
+        transport = RadioFrameTransport(cfg)
+        radio = MagicMock()
+        radio.actual_config_summary.return_value = {"lora.override_frequency": 921.5}
+        transport.radio = radio
+
+        with self.assertRaises(MeshNetError) as raised:
+            transport.start()
+
+        self.assertEqual(raised.exception.code, "BRIDGE_RADIO_CONFIG_MISMATCH")
+        self.assertTrue(raised.exception.details["mismatches"])
+        radio.close.assert_called_once()
+
     def test_radio_transport_can_be_forced_to_direct_destination(self) -> None:
         cfg = self._config(
             name="central",
@@ -539,6 +566,30 @@ class FlowerBridgeIntegrationTests(unittest.TestCase):
         self.assertEqual(cfg.bridge.frame_interval_ms, 400)
         self.assertEqual(cfg.bridge.poll_interval_ms, 500)
 
+    def test_production_flower_config_uses_the_verified_runner_profile(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            cfg = load_config("config.flower-central.example.yaml")
+
+        self.assertEqual(cfg.bridge.payload_bytes, 160)
+        self.assertEqual(cfg.bridge.window_size, 8)
+        self.assertEqual(cfg.bridge.ack_timeout_seconds, 5.0)
+        self.assertEqual(cfg.bridge.control_timeout_seconds, 10.0)
+        self.assertEqual(cfg.bridge.max_retries, 8)
+        self.assertEqual(cfg.bridge.frame_interval_ms, 400)
+        self.assertEqual(cfg.bridge.poll_interval_ms, 500)
+
+    def test_production_bridge_rejects_non_loopback_tcp_endpoints(self) -> None:
+        cfg = load_config("config.flower-central.example.yaml")
+
+        with self.assertRaisesRegex(ValueError, "listen_host must be a loopback"):
+            validate_config(
+                replace(cfg, bridge=replace(cfg.bridge, listen_host="0.0.0.0"))
+            )
+        with self.assertRaisesRegex(ValueError, "upstream_host must be a loopback"):
+            validate_config(
+                replace(cfg, bridge=replace(cfg.bridge, upstream_host="192.0.2.1"))
+            )
+
     def test_local_tcp_data_waits_for_the_scheduled_radio_turn(self) -> None:
         cfg = self._config(
             name="central-turns",
@@ -585,7 +636,7 @@ class FlowerBridgeIntegrationTests(unittest.TestCase):
             patch.object(bridge, "_connection_for", return_value=None),
             patch.object(bridge, "_make_connection", return_value=connection),
             patch.object(bridge, "_replace_connection"),
-            patch.object(bridge, "_prune_seen_sessions"),
+            patch.object(bridge, "_prune_seen_sessions_locked"),
             patch.object(bridge, "_send_control") as send_control,
         ):
             send_control.side_effect = lambda *_args, **_kwargs: self.assertFalse(
@@ -595,6 +646,44 @@ class FlowerBridgeIntegrationTests(unittest.TestCase):
 
         connection.start.assert_called_once_with()
         self.assertTrue(connection.open_event.is_set())
+
+    def test_remote_half_close_never_blocks_radio_callback_on_full_queue(
+        self,
+    ) -> None:
+        cfg = self._config(
+            name="remote-eof",
+            node_id="central-001",
+            role="master",
+            master_id="central-001",
+            slave_id="client-001",
+            peer_id="client-001",
+            peer_mesh="!00000001",
+            listen_port=free_port(),
+            upstream_port=self.echo_port,
+        )
+        local_socket, peer_socket = socket.socketpair()
+        self.addCleanup(peer_socket.close)
+        connection = BridgeConnection(
+            peer_id="client-001",
+            session_id=123,
+            local_socket=local_socket,
+            cfg=cfg,
+            send_frame=MagicMock(),
+            metrics=StreamMetrics(),
+            on_local_eof=MagicMock(),
+            on_local_data=MagicMock(),
+            on_error=MagicMock(),
+        )
+        self.addCleanup(connection.close)
+        for _ in range(connection._rx_queue.maxsize):
+            connection._rx_queue.put_nowait(b"x")
+
+        marker = threading.Thread(target=connection.mark_remote_eof, daemon=True)
+        marker.start()
+        marker.join(timeout=0.2)
+
+        self.assertFalse(marker.is_alive())
+        self.assertTrue(connection.remote_eof.is_set())
 
     def _config(
         self,

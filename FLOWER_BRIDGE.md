@@ -62,7 +62,10 @@ All radios must have identical:
 
 - Region: `MY_919`
 - Preset: `SHORT_FAST`
+- Preset mode enabled (`lora.use_preset: true`)
 - Frequency slot: explicit and verified; example slot `8`
+- No custom frequency override or offset (`override_frequency: 0`,
+  `frequency_offset: 0`)
 - Channel name and channel PSK
 - Firmware version
 
@@ -93,7 +96,10 @@ meshnet setup slave --config config.flower.yaml    # each client
 meshnet doctor --config config.flower.yaml
 ```
 
-`doctor` must show matching region, preset, frequency slot, TX power, device role, channel and PSK.
+`doctor` must show matching preset mode, region, preset, zero frequency
+override/offset, frequency slot, TX power, device role, channel and PSK. The
+bridge repeats this readback at every startup and refuses to carry Flower data
+when the attached radio does not match.
 
 ## Start order
 
@@ -130,6 +136,9 @@ sudo systemctl enable --now meshnet-flower-bridge.service
 ```
 
 Do not enable `meshnet.service` or `meshnet-telegram.service` on the same radio. Meshtastic serial access is intentionally single-owner.
+All three Meshnet units conflict explicitly, and the Flower unit keeps the
+shared temporary namespace so the same serial-owner lock is also seen by a
+manually started Meshnet process.
 
 ## Metrics and logs
 

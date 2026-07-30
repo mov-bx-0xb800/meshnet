@@ -11,10 +11,9 @@ import struct
 import sys
 import time
 import zipfile
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
-
 
 DEFAULT_MODEL_BYTES = 48_712
 DEFAULT_PAYLOAD_BYTES = 160
@@ -300,6 +299,14 @@ def peer_compatibility_errors(
             f"local={local_firmware_version} remote={remote_firmware_version}"
         )
     return errors
+
+
+def peer_mismatch_is_fatal(args: argparse.Namespace) -> bool:
+    """Return whether diagnostic revision differences must reject the peer."""
+    return bool(
+        getattr(args, "strict_peer_match", False)
+        and not getattr(args, "allow_peer_mismatch", False)
+    )
 
 
 def result_plan_fields(size: int, payload_bytes: int, window_size: int) -> dict[str, int]:
@@ -752,7 +759,7 @@ def run_server(args: argparse.Namespace) -> int:
             remote_git_commit=str(header.get("git_commit", "")),
             remote_firmware_version=str(header.get("firmware_version", "")),
         )
-        if compatibility_errors and not args.allow_peer_mismatch:
+        if compatibility_errors and peer_mismatch_is_fatal(args):
             reason = "; ".join(compatibility_errors)
             send_message(connection, {"kind": "error", "reason": reason})
             raise BenchmarkProtocolError(reason)
@@ -1059,7 +1066,16 @@ def add_common_plan_args(parser: argparse.ArgumentParser) -> None:
 def add_peer_identity_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--git-commit", default="")
     parser.add_argument("--firmware-version", default="")
-    parser.add_argument("--allow-peer-mismatch", action="store_true")
+    parser.add_argument(
+        "--strict-peer-match",
+        action="store_true",
+        help="reject a peer whose reported Git commit or firmware differs",
+    )
+    parser.add_argument(
+        "--allow-peer-mismatch",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

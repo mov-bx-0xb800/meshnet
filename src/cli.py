@@ -18,7 +18,6 @@ from .state import StateStore, config_fingerprint
 from .telegram_bridge import print_telegram_chat_ids, run_telegram_bridge
 from .tester import run_tests
 
-
 ROLE_CONFIGS = {
     "master": "config.master.yaml",
     "slave": "config.slave.yaml",
@@ -359,8 +358,19 @@ def command_doctor(args: argparse.Namespace) -> int:
             config_mismatches = radio_config_mismatches(cfg, actual)
             config_ok = not config_mismatches
             logger.line("doctor", "Radio config comparison")
+            print_config_check("use_preset", True, actual.get("lora.use_preset"))
             print_config_check("region", cfg.radio.region, actual.get("lora.region"))
             print_config_check("modem", cfg.radio.modem_preset, actual.get("lora.modem_preset"))
+            print_config_check(
+                "frequency_offset",
+                0.0,
+                actual.get("lora.frequency_offset"),
+            )
+            print_config_check(
+                "override_frequency",
+                0.0,
+                actual.get("lora.override_frequency"),
+            )
             print_config_check("hop_limit", cfg.radio.hop_limit, actual.get("lora.hop_limit"))
             print_config_check("tx_enabled", cfg.radio.transmit_enabled, actual.get("lora.tx_enabled"))
             print_config_check("frequency_slot", cfg.radio.frequency_slot, actual.get("lora.channel_num"))
@@ -514,6 +524,8 @@ def format_age(timestamp: float) -> str:
 
 
 def telegram_unavailable_reason(cfg) -> str:
+    if not cfg.telegram.enabled:
+        return "disabled by telegram.enabled"
     missing = []
     if not cfg.telegram.bot_token:
         missing.append("TELEGRAM_BOT_TOKEN")
