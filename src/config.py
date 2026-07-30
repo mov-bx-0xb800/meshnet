@@ -249,6 +249,16 @@ def _env_bool_or_config(section: Mapping[str, Any], key: str, env_key: str, defa
     return _bool(section, key, default)
 
 
+def _env_int_or_config(section: Mapping[str, Any], key: str, env_key: str, default: int) -> int:
+    value = os.getenv(env_key)
+    if value:
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise ValueError(f"{env_key} must be an integer") from exc
+    return _int(section, key, default)
+
+
 def _load_peers(network: Mapping[str, Any], app: Mapping[str, Any]) -> tuple[PeerConfig, ...]:
     raw_peers = network.get("peers")
     if raw_peers is None:
@@ -365,7 +375,12 @@ def load_config(path: str | os.PathLike[str]) -> MeshConfig:
             frame_interval_ms=_int(bridge, "frame_interval_ms", 210),
             poll_interval_ms=_int(bridge, "poll_interval_ms", 500),
             max_buffer_bytes=_int(bridge, "max_buffer_bytes", 65536),
-            metrics_interval_seconds=_int(bridge, "metrics_interval_seconds", 60),
+            metrics_interval_seconds=_env_int_or_config(
+                bridge,
+                "metrics_interval_seconds",
+                "MESHNET_BRIDGE_METRICS_INTERVAL_SECONDS",
+                60,
+            ),
         ),
     )
     validate_config(cfg)
@@ -489,6 +504,8 @@ def validate_config(cfg: MeshConfig) -> None:
             raise ValueError("bridge.max_retries must be positive")
         if cfg.bridge.frame_interval_ms < 0 or cfg.bridge.poll_interval_ms < 50:
             raise ValueError("bridge frame/poll intervals are invalid")
+        if cfg.bridge.metrics_interval_seconds < 1:
+            raise ValueError("bridge.metrics_interval_seconds must be at least 1")
         if cfg.bridge.max_buffer_bytes < cfg.bridge.payload_bytes * cfg.bridge.window_size * 2:
             raise ValueError("bridge.max_buffer_bytes is too small for two protocol windows")
         if cfg.radio.region != "MY_919":

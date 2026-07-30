@@ -97,11 +97,23 @@ if errors:
 print("[run] LoRa-only guard passed: MQTT off, Telegram off, loopback TCP only, pinned peer IDs present.")
 PY
 
+METRICS_FILE="$("${PY}" - "${CONFIG}" <<'PY'
+import sys
+from pathlib import Path
+
+print(str(Path(sys.argv[1]).expanduser().resolve().with_suffix(".bridge-metrics.json")))
+PY
+)"
 ROUNDS="${ROUNDS:-1}"
 LOGICAL_CLIENTS="${LOGICAL_CLIENTS:-1}"
 EVALUATE="${EVALUATE:-1}"
 MODEL_BYTES="${MODEL_BYTES:-}"
 WEIGHTS_NPZ="${WEIGHTS_NPZ:-}"
+STATUS_INTERVAL="${STATUS_INTERVAL:-10}"
+BRIDGE_METRICS_INTERVAL="${STATUS_INTERVAL}"
+if [[ "${BRIDGE_METRICS_INTERVAL}" == "0" || "${BRIDGE_METRICS_INTERVAL}" == "false" ]]; then
+  BRIDGE_METRICS_INTERVAL=60
+fi
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 BRIDGE_LOG="flower-bridge-${ROLE}-${RUN_ID}.log"
 BENCH_JSONL="flower-round-${ROLE}-${RUN_ID}.jsonl"
@@ -113,6 +125,10 @@ stop_services() {
 }
 
 cleanup() {
+  if [[ -n "${STATUS_PID:-}" ]] && kill -0 "${STATUS_PID}" 2>/dev/null; then
+    kill "${STATUS_PID}" 2>/dev/null || true
+    wait "${STATUS_PID}" 2>/dev/null || true
+  fi
   if [[ -n "${BRIDGE_PID:-}" ]] && kill -0 "${BRIDGE_PID}" 2>/dev/null; then
     kill "${BRIDGE_PID}" 2>/dev/null || true
     wait "${BRIDGE_PID}" 2>/dev/null || true
@@ -120,8 +136,62 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+start_status_log() {
+  if [[ "${STATUS_INTERVAL}" == "0" || "${STATUS_INTERVAL}" == "false" ]]; then
+    return
+  fi
+  echo "[run] concise status every ${STATUS_INTERVAL}s; set STATUS_INTERVAL=0 to hide it"
+  "${PY}" - "${METRICS_FILE}" "${STATUS_INTERVAL}" <<'PY' &
+import json
+import sys
+import time
+from pathlib import Path
+
+path = Path(sys.argv[1])
+interval = float(sys.argv[2])
+previous = {}
+
+def number(metrics, key):
+    return int(metrics.get(key, 0) or 0)
+
+while True:
+    time.sleep(interval)
+    if not path.exists():
+        print("[status] waiting_for_bridge_metrics", flush=True)
+        continue
+    try:
+        metrics = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"[status] metrics_read_failed={exc}", flush=True)
+        continue
+
+    def delta(key):
+        return number(metrics, key) - number(previous, key)
+
+    uptime = metrics.get("uptime_seconds", 0)
+    print(
+        "[status] "
+        f"up={uptime}s "
+        f"packets_tx={number(metrics, 'frames_sent')}(+{delta('frames_sent')}) "
+        f"packets_rx={number(metrics, 'frames_received')}(+{delta('frames_received')}) "
+        f"data_tx={number(metrics, 'data_bytes_sent')}B(+{delta('data_bytes_sent')}) "
+        f"data_rx={number(metrics, 'data_bytes_received')}B(+{delta('data_bytes_received')}) "
+        f"ack_tx={number(metrics, 'acknowledgements_sent')}(+{delta('acknowledgements_sent')}) "
+        f"ack_rx={number(metrics, 'acknowledgements_received')}(+{delta('acknowledgements_received')}) "
+        f"retrans={number(metrics, 'retransmitted_frames')}(+{delta('retransmitted_frames')}) "
+        f"invalid={number(metrics, 'invalid_frames')}(+{delta('invalid_frames')}) "
+        f"opened={number(metrics, 'sessions_opened')} "
+        f"resets={number(metrics, 'sessions_reset')}",
+        flush=True,
+    )
+    previous = metrics
+PY
+  STATUS_PID="$!"
+}
+
 echo "[run] role=${ROLE} config=${CONFIG}"
 echo "[run] rounds=${ROUNDS} logical_clients=${LOGICAL_CLIENTS} evaluate=${EVALUATE}"
+echo "[run] status_interval=${STATUS_INTERVAL}"
 if [[ -n "${WEIGHTS_NPZ}" ]]; then
   echo "[run] weights_npz=${WEIGHTS_NPZ}"
 elif [[ -n "${MODEL_BYTES}" ]]; then
@@ -131,11 +201,14 @@ else
 fi
 echo "[run] bridge_log=${BRIDGE_LOG}"
 echo "[run] jsonl=${BENCH_JSONL}"
+echo "[run] metrics_file=${METRICS_FILE}"
 
 stop_services
+rm -f "${METRICS_FILE}"
 
 echo "[run] starting bridge"
-"${MESHNET}" bridge --config "${CONFIG}" >"${BRIDGE_LOG}" 2>&1 &
+MESHNET_BRIDGE_METRICS_INTERVAL_SECONDS="${BRIDGE_METRICS_INTERVAL}" \
+  "${MESHNET}" bridge --config "${CONFIG}" >"${BRIDGE_LOG}" 2>&1 &
 BRIDGE_PID="$!"
 sleep 5
 
@@ -144,6 +217,8 @@ if ! kill -0 "${BRIDGE_PID}" 2>/dev/null; then
   tail -n 80 "${BRIDGE_LOG}" >&2 || true
   exit 1
 fi
+
+start_status_log
 
 run_benchmark() {
   local status=0
