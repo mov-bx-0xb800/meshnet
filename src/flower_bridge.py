@@ -391,6 +391,15 @@ class FlowerBridge:
     def start(self) -> None:
         self._running.set()
         self.transport.start()
+        logger.line(
+            "bridge",
+            "profile "
+            f"payload={self.cfg.bridge.payload_bytes}B "
+            f"window={self.cfg.bridge.window_size} "
+            f"frame_interval={self.cfg.bridge.frame_interval_ms}ms "
+            f"poll_interval={self.cfg.bridge.poll_interval_ms}ms "
+            f"ack_timeout={self.cfg.bridge.ack_timeout_seconds}s",
+        )
         if self.is_central:
             scheduler = threading.Thread(
                 target=self._central_scheduler,
@@ -629,12 +638,16 @@ class FlowerBridge:
             )
             existing = self._connection_for(peer_id, session_id)
             if existing is not None:
-                self._send_control(
-                    peer_id,
-                    FrameType.OPEN_OK,
-                    session_id,
-                    repeat=OPEN_OK_REPEATS,
-                )
+                existing.open_event.clear()
+                try:
+                    self._send_control(
+                        peer_id,
+                        FrameType.OPEN_OK,
+                        session_id,
+                        repeat=OPEN_OK_REPEATS,
+                    )
+                finally:
+                    existing.open_event.set()
                 return
             seen_at = self._seen_sessions.get((peer_id, session_id))
             if seen_at is not None:
@@ -661,6 +674,7 @@ class FlowerBridge:
                 session_id,
                 repeat=OPEN_OK_REPEATS,
             )
+            connection.open_event.set()
             logger.line(
                 "bridge",
                 f"Opened {peer_id} session {session_id} to "
@@ -677,6 +691,8 @@ class FlowerBridge:
                 continue
             for connection in connections:
                 if not self._running.is_set() or connection.closed.is_set():
+                    continue
+                if not connection.open_event.is_set():
                     continue
                 try:
                     if connection.stream.pending_bytes:
@@ -753,22 +769,9 @@ class FlowerBridge:
         logger.line(
             "bridge-data",
             f"local queued peer={connection.peer_id} session={connection.session_id} "
-            f"pending={connection.stream.pending_bytes}B",
+            f"pending={connection.stream.pending_bytes}B "
+            f"turn={'central_scheduler' if self.is_central else 'next_poll'}",
         )
-        self._send_available_window(connection)
-
-    def _send_available_window(self, connection: BridgeConnection) -> None:
-        if connection.closed.is_set() or not connection.stream.pending_bytes:
-            return
-        try:
-            sent = connection.stream.send_window()
-            logger.line(
-                "bridge-data",
-                f"send_window peer={connection.peer_id} session={connection.session_id} "
-                f"sent={sent}B pending={connection.stream.pending_bytes}B",
-            )
-        except Exception as exc:
-            self._connection_error(connection, exc)
 
     def _on_local_eof(self, connection: BridgeConnection) -> None:
         def flush_and_close_write() -> None:

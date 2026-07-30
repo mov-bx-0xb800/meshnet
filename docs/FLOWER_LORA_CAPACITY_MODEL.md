@@ -15,7 +15,7 @@ Do not mix these:
 - `kbps` = kilobits per second.
 - `KB/s` = kilobytes per second.
 - `233 bytes` = current Meshtastic application-frame cap in this repo.
-- `192 bytes` = current bridge stream payload per DATA frame.
+- `160 bytes` = current conservative bridge stream payload per DATA frame.
 
 ## Current ML Model
 
@@ -61,31 +61,31 @@ Current bridge facts:
 
 - Meshtastic application frame cap: `233` bytes.
 - Stream header and tag reduce usable stream payload.
-- Default DATA payload: `192` bytes.
+- Default DATA payload: `160` bytes (`200` bytes after the bridge header and tag).
 - Window size: `8` DATA frames.
 - ACK requested on the final missing DATA frame in a window.
-- `frame_interval_ms`: `210`.
+- `frame_interval_ms`: `400`.
 - `poll_interval_ms`: `500`.
 - `POLL_DONE` is sent twice.
 - `max_retries`: `8`.
 
 ## One Full Model Transfer
 
-Using current `48,712` bytes and `192` byte DATA payloads:
+Using current `48,712` bytes and `160` byte DATA payloads:
 
 ```text
-data frames = ceil(48,712 / 192) = 254
-windows     = ceil(254 / 8)      = 32
+data frames = ceil(48,712 / 160) = 305
+windows     = ceil(305 / 8)      = 39
 ```
 
 Approximate minimum LoRa packet count for one model-sized movement:
 
 ```text
-DATA      254
-ACK        32
-POLL       32
-POLL_DONE  64
-total     382 packets before open/close frames, retries, broadcasts, and firmware overhead
+DATA      305
+ACK        39
+POLL       39
+POLL_DONE  78
+total     461 packets before open/close frames, retries, broadcasts, and firmware overhead
 ```
 
 This packet count is an implementation estimate from current bridge logic, not a measured RF capture.
@@ -111,17 +111,29 @@ Three rounds:
 ```text
 full model movements = 6 * 3 = 18
 model payload only   = 18 * 48,712 = 876,816 bytes
-DATA frames only     = 18 * 254    = 4,572 frames
-minimum packets      = 18 * 382    = 6,876 packets
+DATA frames only     = 18 * 305    = 5,490 frames
+minimum packets      = 18 * 461    = 8,298 packets
 ```
 
-At the repo target of `700 B/s` worst-link application goodput:
+At the old repo target of `700 B/s` worst-link application goodput:
 
 ```text
 876,816 / 700 = 1,252.6 seconds = about 20.9 minutes
 ```
 
-That excludes:
+That `20.9 minute` figure is payload-only and is not reachable with the current
+packet schedule and `400 ms` frame pacing. Pacing `8,298` estimated packets
+alone takes at least:
+
+```text
+8,298 * 0.400 = 3,319.2 seconds = about 55.3 minutes
+```
+
+One model movement has a packet-pacing ceiling of about `264 B/s` before USB
+send acceptance time, poll delays, retries, and RF loss. The real full test can
+therefore take considerably longer than 55 minutes.
+
+The pacing floor still excludes:
 
 - local training time,
 - TCP/gRPC churn,

@@ -70,12 +70,12 @@ bridge:
   listen_port: 8081
   upstream_host: "127.0.0.1"
   upstream_port: 8081
-  payload_bytes: 192
+  payload_bytes: 160
   window_size: 8
   ack_timeout_seconds: 5
   control_timeout_seconds: 10
   max_retries: 8
-  frame_interval_ms: 210
+  frame_interval_ms: 400
   poll_interval_ms: 500
   max_buffer_bytes: 65536
   metrics_interval_seconds: 60

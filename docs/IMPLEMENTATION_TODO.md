@@ -46,8 +46,12 @@ This is the working checklist for turning the current demo-feasible bridge into 
   - distance and antenna height.
 - Run one client alone, then two clients simultaneously.
 - Test both directions for each client.
-- Keep the benchmark target at or above 700 B/s worst-link application goodput unless we intentionally revise the system design.
-- Confirm one current model-sized transfer, about 48,712 Flower tensor bytes for the 18-feature model, stays below 75 seconds under normal RF conditions.
+- Replace the invalid 700 B/s target with a measured clean-link baseline. The
+  current 160-byte chunks and 400 ms packet pacing cap one 48,712-byte movement
+  below about 264 B/s before USB, poll, and retry overhead.
+- Confirm one current model-sized transfer, 48,712 Flower tensor bytes for the
+  18-feature model, completes with exact hash integrity in both directions
+  before attempting the full three-round run.
 - Run ten consecutive complete three-round Flower runs only after the single-transfer test is stable.
 - Correct stale 15-feature model size/count references in `../TasikChiniResearch/LORA_TRANSPORT.md`, `../TasikChiniResearch/agent.md`, and older progress notes.
 - Add generated calculation output to docs after every model architecture change.

@@ -17,7 +17,7 @@ from typing import Any, Iterable
 
 
 DEFAULT_MODEL_BYTES = 48_712
-DEFAULT_PAYLOAD_BYTES = 192
+DEFAULT_PAYLOAD_BYTES = 160
 DEFAULT_WINDOW_SIZE = 8
 DEFAULT_TARGET_GOODPUT_BPS = 700.0
 MAX_HEADER_BYTES = 64 * 1024
@@ -319,8 +319,14 @@ def print_event(event: dict[str, Any], writer: JsonlWriter) -> None:
             f"data_frames_per_round={event['data_frames_per_round']} "
             f"windows_per_round={event['windows_per_round']} "
             f"approx_packets_per_round={event['approx_packets_per_round']} "
-            f"payload_only_seconds_at_{event['target_goodput_bytes_per_second']}Bps="
-            f"{event['payload_seconds_per_round_at_target']}",
+            f"total_transfers={event['total_full_model_transfers']} "
+            f"total_bytes={event['total_model_bytes']} "
+            f"total_data_frames={event['total_data_frames']} "
+            f"total_windows={event['total_windows']} "
+            f"total_approx_packets={event['total_approx_packets']} "
+            f"payload_only_seconds_per_round_at_{event['target_goodput_bytes_per_second']}Bps="
+            f"{event['payload_seconds_per_round_at_target']} "
+            f"total_payload_only_seconds={event['total_payload_seconds_at_target']}",
             flush=True,
         )
     elif event.get("event") == "client_config":
@@ -362,6 +368,9 @@ def plan_event(plan: RoundPlan, source: str, target_goodput_bps: float) -> dict[
         "data_frames_per_round": plan.data_frames_per_round,
         "windows_per_round": plan.windows_per_round,
         "approx_packets_per_round": plan.approx_packets_per_round,
+        "total_data_frames": plan.data_frames_per_round * plan.rounds,
+        "total_windows": plan.windows_per_round * plan.rounds,
+        "total_approx_packets": plan.approx_packets_per_round * plan.rounds,
         "payload_seconds_per_transfer_at_target": round(
             plan.per_transfer.payload_seconds_at_target, 3
         ),
@@ -941,7 +950,7 @@ def add_common_plan_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="sum uncompressed .npy tensor bytes from a Flower/Keras weights npz",
     )
-    parser.add_argument("--rounds", type=int, default=1)
+    parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--logical-clients", type=int, default=2)
     parser.add_argument("--no-evaluate", action="store_true")
     parser.add_argument("--payload-bytes", type=int, default=DEFAULT_PAYLOAD_BYTES)

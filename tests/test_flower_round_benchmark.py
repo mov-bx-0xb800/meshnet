@@ -19,14 +19,14 @@ SPEC.loader.exec_module(benchmark)
 
 class FlowerRoundBenchmarkPlanTests(unittest.TestCase):
     def test_current_model_transfer_plan(self) -> None:
-        plan = benchmark.transfer_plan(48_712, payload_bytes=192, window_size=8)
+        plan = benchmark.transfer_plan(48_712, payload_bytes=160, window_size=8)
 
-        self.assertEqual(plan.data_frames, 254)
-        self.assertEqual(plan.windows, 32)
-        self.assertEqual(plan.ack_frames, 32)
-        self.assertEqual(plan.poll_frames, 32)
-        self.assertEqual(plan.poll_done_frames, 64)
-        self.assertEqual(plan.approx_packets, 382)
+        self.assertEqual(plan.data_frames, 305)
+        self.assertEqual(plan.windows, 39)
+        self.assertEqual(plan.ack_frames, 39)
+        self.assertEqual(plan.poll_frames, 39)
+        self.assertEqual(plan.poll_done_frames, 78)
+        self.assertEqual(plan.approx_packets, 461)
         self.assertAlmostEqual(plan.payload_seconds_at_target, 69.589, places=3)
 
     def test_two_client_full_round_plan_with_evaluate(self) -> None:
@@ -35,15 +35,15 @@ class FlowerRoundBenchmarkPlanTests(unittest.TestCase):
             rounds=1,
             logical_clients=2,
             include_evaluate=True,
-            payload_bytes=192,
+            payload_bytes=160,
             window_size=8,
         )
 
         self.assertEqual(plan.full_model_transfers_per_round, 6)
         self.assertEqual(plan.bytes_per_round, 292_272)
-        self.assertEqual(plan.data_frames_per_round, 1_524)
-        self.assertEqual(plan.windows_per_round, 192)
-        self.assertEqual(plan.approx_packets_per_round, 2_292)
+        self.assertEqual(plan.data_frames_per_round, 1_830)
+        self.assertEqual(plan.windows_per_round, 234)
+        self.assertEqual(plan.approx_packets_per_round, 2_766)
         self.assertAlmostEqual(plan.payload_seconds_per_round_at_target, 417.531, places=3)
 
     def test_two_client_fit_only_round_plan(self) -> None:
@@ -52,13 +52,13 @@ class FlowerRoundBenchmarkPlanTests(unittest.TestCase):
             rounds=1,
             logical_clients=2,
             include_evaluate=False,
-            payload_bytes=192,
+            payload_bytes=160,
             window_size=8,
         )
 
         self.assertEqual(plan.full_model_transfers_per_round, 4)
         self.assertEqual(plan.bytes_per_round, 194_848)
-        self.assertEqual(plan.approx_packets_per_round, 1_528)
+        self.assertEqual(plan.approx_packets_per_round, 1_844)
 
 
 class FlowerRoundBenchmarkProtocolTests(unittest.TestCase):

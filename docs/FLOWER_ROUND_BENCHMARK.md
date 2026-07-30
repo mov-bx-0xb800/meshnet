@@ -17,13 +17,15 @@ artificial sleeps, but it does replicate the network choreography:
 Default current model payload:
 
 - `48,712` bytes per full model transfer.
-- `254` DATA frames at `192` bytes per stream payload.
-- `32` bridge windows at `8` DATA frames per window.
-- About `382` LoRa packets per model transfer before retries:
+- `305` DATA frames at `160` bytes per stream payload.
+- `39` bridge windows at `8` DATA frames per window.
+- About `461` LoRa packets per model transfer before retries:
   DATA + ACK + POLL + two repeated POLL_DONE control frames.
 - With `2` logical clients and evaluate enabled: `6` full model transfers,
-  `292,272` model bytes per round, `1,524` DATA frames, about `2,292`
+  `292,272` model bytes per round, `1,830` DATA frames, about `2,766`
   LoRa packets before retries.
+- The default runner performs `3` rounds, so the complete simulation moves
+  `876,816` model bytes in `18` full model movements.
 
 ## Local Plan
 
@@ -42,6 +44,35 @@ python3 scripts/flower_round_benchmark.py plan \
 
 ## Two-Node Run
 
+The normal runner now defaults to the complete intended profile:
+
+```text
+MODEL_BYTES=48712
+ROUNDS=3
+LOGICAL_CLIENTS=2
+EVALUATE=1
+BRIDGE_PAYLOAD_BYTES=160
+BRIDGE_FRAME_INTERVAL_MS=400
+```
+
+Start central first and then client:
+
+```bash
+./scripts/run-flower-round-test.sh
+```
+
+The two nodes must use the same git commit and the same Meshtastic firmware
+line. The full run has an absolute packet-pacing floor of about `55 minutes`
+and will take longer with USB queueing, scheduler waits, retransmissions, or
+poor RF.
+
+For a short transport smoke test:
+
+```bash
+MODEL_BYTES=512 ROUNDS=1 LOGICAL_CLIENTS=1 EVALUATE=0 \
+  ./scripts/run-flower-round-test.sh
+```
+
 On the central node, make sure the central bridge forwards to the same host and
 port used below. Then run:
 
@@ -49,7 +80,7 @@ port used below. Then run:
 python3 scripts/flower_round_benchmark.py server \
   --host 127.0.0.1 \
   --port 8081 \
-  --rounds 1 \
+  --rounds 3 \
   --logical-clients 2 \
   --jsonl central-round-benchmark.jsonl
 ```

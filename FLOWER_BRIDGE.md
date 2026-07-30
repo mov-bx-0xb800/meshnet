@@ -18,7 +18,7 @@ The central bridge opens one independent local TCP connection to Flower for each
 
 - 233-byte maximum Meshtastic application frame.
 - 24-byte binary header and 16-byte HMAC-SHA256 tag.
-- 192-byte default stream payload.
+- 160-byte conservative stream payload (200 bytes encoded).
 - Eight-frame default transmission window.
 - Cumulative ACK plus 32-bit selective ACK bitmap.
 - Selective retransmission, duplicate rejection and in-order delivery.
@@ -150,16 +150,23 @@ Important counters:
 
 For the initial field acceptance test, require:
 
-- exact hash match for repeated 47,164-byte binary transfers;
+- exact hash match for repeated 48,712-byte binary transfers;
 - no invalid/HMAC frames;
-- sustained worst-link goodput of at least 700 B/s;
 - normal retransmissions below 10%;
-- one model transfer no slower than 75 seconds;
-- ten consecutive complete three-round Flower runs.
+- no concurrent send windows or transmissions outside the scheduled poll turn;
+- one complete 48,712-byte movement in both directions before attempting a
+  complete three-round run;
+- ten consecutive complete three-round Flower runs before unattended use.
+
+The old `700 B/s` and `75 second` targets are invalid with 160-byte chunks and
+400 ms packet pacing. One movement needs about 461 packets, so pacing alone is
+at least 184.4 seconds before USB acceptance time, poll waits, or retries.
+Record the real clean-link baseline before setting a field goodput threshold.
 
 ## Bench verification
 
-The software suite includes protocol tampering, dropped-frame recovery, a 47,164-byte split-TCP echo transfer, and two concurrent client tunnels:
+The software suite includes protocol tampering, dropped-frame recovery, a
+48,712-byte split-TCP echo transfer, and two concurrent client tunnels:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
@@ -175,7 +182,7 @@ python scripts/flower-bridge-benchmark.py server --host 127.0.0.1 --port 8081
 
 # Each client Pi
 python scripts/flower-bridge-benchmark.py client \
-  --host 127.0.0.1 --port 8081 --bytes 47164 --count 10 --timeout 300
+  --host 127.0.0.1 --port 8081 --bytes 48712 --count 10 --timeout 600
 ```
 
 The client prints SHA-256 integrity, elapsed time, and application goodput for every model-sized transfer. Test clients separately first, then simultaneously to validate central scheduling.

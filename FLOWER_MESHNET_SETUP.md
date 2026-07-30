@@ -250,4 +250,8 @@ journalctl -u tasik-flower-client.service -f -o short-iso-precise
 
 ## 7. Acceptance test
 
-Before lake deployment, run the 47,164-byte benchmark described in [FLOWER_BRIDGE.md](FLOWER_BRIDGE.md) through all three physical radios. Confirm exact hashes, transfer time, retransmission rate, RSSI and SNR in both directions for each client. Then complete repeated three-round Flower runs before enabling unattended operation.
+Before lake deployment, run the 48,712-byte benchmark described in
+[FLOWER_BRIDGE.md](FLOWER_BRIDGE.md) through all three physical radios. Confirm
+exact hashes, transfer time, retransmission rate, RSSI and SNR in both
+directions for each client. Then complete repeated three-round Flower runs
+before enabling unattended operation.

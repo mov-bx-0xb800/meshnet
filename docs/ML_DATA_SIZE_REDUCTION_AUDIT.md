@@ -119,9 +119,9 @@ One current 18-feature model movement:
 
 ```text
 payload size       48,712 bytes
-bridge DATA frames ceil(48,712 / 192) = 254
-windows            ceil(254 / 8) = 32
-approx packets     DATA 254 + ACK 32 + POLL 32 + POLL_DONE 64 = 382
+bridge DATA frames ceil(48,712 / 160) = 305
+windows            ceil(305 / 8) = 39
+approx packets     DATA 305 + ACK 39 + POLL 39 + POLL_DONE 78 = 461
 ```
 
 Two clients, three rounds, current fit plus evaluate flow:
@@ -129,12 +129,14 @@ Two clients, three rounds, current fit plus evaluate flow:
 ```text
 full movements 18
 model payload   876,816 bytes
-DATA frames     4,572
-approx packets  6,876
+DATA frames     5,490
+approx packets  8,298
 time at 700 B/s 20.9 minutes payload-only
 ```
 
-This excludes gRPC framing, bridge open/close/control, retries, failed windows, reconnects, and local training time.
+At the current 400 ms frame pacing, the estimated 8,298 packets alone require
+at least 55.3 minutes. Both figures exclude gRPC framing, bridge open/close
+control, retries, failed windows, reconnects, and local training time.
 
 ## Why Generic Compression Is Weak
 

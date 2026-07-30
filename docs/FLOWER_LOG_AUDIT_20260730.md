@@ -60,10 +60,14 @@ The run accidentally used the heavy benchmark defaults:
 - `transfers_per_round=3`
 - `bytes_per_round=146136`
 
-The runner now defaults to the small smoke test:
+That commit temporarily changed the runner to a small smoke test:
 
 - `EVALUATE=0`
 - `MODEL_BYTES=512`
+
+After the later `12:01Z` run isolated the stream scheduling and frame-size
+failures, the runner moved to the complete intended profile. See
+`FLOWER_LOG_AUDIT_20260730_1201.md`.
 
 ## Code Fixes
 

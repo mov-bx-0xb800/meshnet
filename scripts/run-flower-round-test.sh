@@ -28,7 +28,7 @@ print(cfg["app"]["role"])
 PY
 )"
 
-read -r LISTEN_HOST LISTEN_PORT UPSTREAM_HOST UPSTREAM_PORT < <("${PY}" - "${CONFIG}" <<'PY'
+read -r LISTEN_HOST LISTEN_PORT UPSTREAM_HOST UPSTREAM_PORT CONFIG_WINDOW_SIZE < <("${PY}" - "${CONFIG}" <<'PY'
 import sys, yaml
 with open(sys.argv[1], encoding="utf-8") as fh:
     cfg = yaml.safe_load(fh)
@@ -38,6 +38,7 @@ print(
     bridge["listen_port"],
     bridge["upstream_host"],
     bridge["upstream_port"],
+    bridge.get("window_size", 8),
 )
 PY
 )
@@ -48,11 +49,14 @@ case "${ROLE}" in
   *) LOG_ROLE="unknown" ;;
 esac
 
-ROUNDS="${ROUNDS:-1}"
-LOGICAL_CLIENTS="${LOGICAL_CLIENTS:-1}"
-EVALUATE="${EVALUATE:-0}"
-MODEL_BYTES="${MODEL_BYTES:-512}"
+ROUNDS="${ROUNDS:-3}"
+LOGICAL_CLIENTS="${LOGICAL_CLIENTS:-2}"
+EVALUATE="${EVALUATE:-1}"
+MODEL_BYTES="${MODEL_BYTES:-48712}"
 WEIGHTS_NPZ="${WEIGHTS_NPZ:-}"
+BRIDGE_PAYLOAD_BYTES="${BRIDGE_PAYLOAD_BYTES:-160}"
+BRIDGE_WINDOW_SIZE="${BRIDGE_WINDOW_SIZE:-${CONFIG_WINDOW_SIZE}}"
+BRIDGE_FRAME_INTERVAL_MS="${BRIDGE_FRAME_INTERVAL_MS:-400}"
 STATUS_INTERVAL="${STATUS_INTERVAL:-10}"
 CAPTURE_RADIO_INFO="${CAPTURE_RADIO_INFO:-1}"
 EXPORT_LOG_ARCHIVE="${EXPORT_LOG_ARCHIVE:-1}"
@@ -198,6 +202,9 @@ write_metadata() {
     echo "evaluate=${EVALUATE}"
     echo "model_bytes=${MODEL_BYTES:-benchmark-default}"
     echo "weights_npz=${WEIGHTS_NPZ:-}"
+    echo "bridge_payload_bytes=${BRIDGE_PAYLOAD_BYTES}"
+    echo "bridge_window_size=${BRIDGE_WINDOW_SIZE}"
+    echo "bridge_frame_interval_ms=${BRIDGE_FRAME_INTERVAL_MS}"
     echo "status_interval=${STATUS_INTERVAL}"
     echo "bridge_metrics_interval=${BRIDGE_METRICS_INTERVAL}"
     echo "capture_radio_info=${CAPTURE_RADIO_INFO}"
@@ -649,6 +656,7 @@ capture_systemd_logs "before" "${SYSTEMD_BEFORE_LOG}"
 
 echo "[run] role=${ROLE} config=${CONFIG}"
 echo "[run] rounds=${ROUNDS} logical_clients=${LOGICAL_CLIENTS} evaluate=${EVALUATE}"
+echo "[run] bridge_payload_bytes=${BRIDGE_PAYLOAD_BYTES} bridge_window_size=${BRIDGE_WINDOW_SIZE} frame_interval_ms=${BRIDGE_FRAME_INTERVAL_MS}"
 echo "[run] status_interval=${STATUS_INTERVAL}"
 if [[ -n "${WEIGHTS_NPZ}" ]]; then
   echo "[run] weights_npz=${WEIGHTS_NPZ}"
@@ -669,7 +677,9 @@ capture_radio_info
 rm -f "${METRICS_FILE}"
 
 echo "[run] starting bridge"
-MESHNET_BRIDGE_METRICS_INTERVAL_SECONDS="${BRIDGE_METRICS_INTERVAL}" \
+MESHNET_BRIDGE_PAYLOAD_BYTES="${BRIDGE_PAYLOAD_BYTES}" \
+  MESHNET_BRIDGE_FRAME_INTERVAL_MS="${BRIDGE_FRAME_INTERVAL_MS}" \
+  MESHNET_BRIDGE_METRICS_INTERVAL_SECONDS="${BRIDGE_METRICS_INTERVAL}" \
   "${MESHNET}" bridge --config "${CONFIG}" >"${BRIDGE_LOG}" 2>&1 &
 BRIDGE_PID="$!"
 sleep 5
@@ -682,7 +692,10 @@ fi
 
 start_status_log
 
-BENCH_ARGS=()
+BENCH_ARGS=(
+  --payload-bytes "${BRIDGE_PAYLOAD_BYTES}"
+  --window-size "${BRIDGE_WINDOW_SIZE}"
+)
 if [[ "${EVALUATE}" == "0" || "${EVALUATE}" == "false" ]]; then
   BENCH_ARGS+=(--no-evaluate)
 fi

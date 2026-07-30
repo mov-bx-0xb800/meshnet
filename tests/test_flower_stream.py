@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from typing import Callable
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import yaml
 
@@ -465,6 +465,63 @@ class FlowerBridgeIntegrationTests(unittest.TestCase):
         self.assertEqual(fake.calls[0]["destination_id"], "!00000001")
         self.assertTrue(fake.calls[0]["want_ack"])
 
+    def test_local_tcp_data_waits_for_the_scheduled_radio_turn(self) -> None:
+        cfg = self._config(
+            name="central-turns",
+            node_id="central-001",
+            role="master",
+            master_id="central-001",
+            slave_id="client-001",
+            peer_id="client-001",
+            peer_mesh="!00000001",
+            listen_port=free_port(),
+            upstream_port=self.echo_port,
+        )
+        bridge = FlowerBridge(cfg, MemoryTransport(MemoryBus(), "central-001"))
+        connection = MagicMock()
+        connection.peer_id = "client-001"
+        connection.session_id = 123
+        connection.stream.pending_bytes = 512
+
+        bridge._on_local_data(connection)
+
+        connection.stream.send_window.assert_not_called()
+
+    def test_central_connection_is_not_ready_until_open_burst_finishes(self) -> None:
+        cfg = self._config(
+            name="central-open-gate",
+            node_id="central-001",
+            role="master",
+            master_id="central-001",
+            slave_id="client-001",
+            peer_id="client-001",
+            peer_mesh="!00000001",
+            listen_port=free_port(),
+            upstream_port=self.echo_port,
+        )
+        bridge = FlowerBridge(cfg, MemoryTransport(MemoryBus(), "central-001"))
+        connection = MagicMock()
+        connection.open_event = threading.Event()
+
+        with (
+            patch(
+                "src.flower_bridge.socket.create_connection",
+                return_value=MagicMock(),
+            ),
+            patch.object(bridge, "_connection_for", return_value=None),
+            patch.object(bridge, "_make_connection", return_value=connection),
+            patch.object(bridge, "_replace_connection"),
+            patch.object(bridge, "_prune_seen_sessions"),
+            patch.object(bridge, "_send_control") as send_control,
+        ):
+            send_control.side_effect = lambda *_args, **_kwargs: self.assertFalse(
+                connection.open_event.is_set()
+            )
+            bridge._handle_central_open("client-001", 456)
+
+        connection.start.assert_called_once_with()
+        self.assertTrue(connection.open_event.is_set())
+
     def _config(
         self,
         *,
@@ -543,7 +600,7 @@ class FlowerBridgeIntegrationTests(unittest.TestCase):
                 "listen_port": listen_port,
                 "upstream_host": "127.0.0.1",
                 "upstream_port": upstream_port,
-                "payload_bytes": 192,
+                "payload_bytes": 160,
                 "window_size": 8,
                 "ack_timeout_seconds": 0.1,
                 "control_timeout_seconds": 0.5,
