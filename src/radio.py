@@ -654,6 +654,8 @@ def setup_radio(cfg: MeshConfig) -> None:
     command = [
         "--port",
         port,
+        "--dest",
+        "^local",
         "--set",
         "lora.region",
         cfg.radio.region,
@@ -710,7 +712,7 @@ def setup_radio(cfg: MeshConfig) -> None:
 
     logger.line("setup", "Rebooting radio...")
     try:
-        run_meshtastic_cli(["--port", port, "--reboot"], "setup")
+        run_meshtastic_cli(["--port", port, "--dest", "^local", "--reboot"], "setup")
     except Exception as exc:
         logger.line("setup", f"Reboot command warning: {exc}")
 

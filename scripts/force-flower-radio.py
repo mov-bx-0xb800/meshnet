@@ -46,6 +46,10 @@ def resolve_requested_port(cfg, requested_port: str | None) -> str:
     return resolve_port(cfg, "force", verbose=True)
 
 
+def local_args(port: str, *args: str) -> list[str]:
+    return ["--port", port, "--dest", "^local", *args]
+
+
 def main() -> int:
     args = build_parser().parse_args()
     cfg = load_config(args.config)
@@ -78,41 +82,42 @@ def main() -> int:
     for field, value in field_updates:
         text_value = str(int(value)) if isinstance(value, bool) else str(value)
         print(f"[force] set {field}={text_value}", flush=True)
-        run_meshtastic_cli(["--port", port, "--set", field, text_value], "force")
+        run_meshtastic_cli(local_args(port, "--set", field, text_value), "force")
 
     print(f"[force] set channel[{cfg.radio.channel_index}].name={cfg.radio.channel_name}")
     run_meshtastic_cli(
-        [
-            "--port",
+        local_args(
             port,
             "--ch-index",
             str(cfg.radio.channel_index),
             "--ch-set",
             "name",
             cfg.radio.channel_name,
-        ],
+        ),
         "force",
     )
     print(f"[force] set channel[{cfg.radio.channel_index}].psk")
     run_meshtastic_cli(
-        [
-            "--port",
+        local_args(
             port,
             "--ch-index",
             str(cfg.radio.channel_index),
             "--ch-set",
             "psk",
             psk,
-        ],
+        ),
         "force",
     )
     print(f"[force] set owner.long_name={cfg.app.node_name}")
-    run_meshtastic_cli(["--port", port, "--set-owner", cfg.app.node_name], "force")
+    run_meshtastic_cli(local_args(port, "--set-owner", cfg.app.node_name), "force")
     print(f"[force] set owner.short_name={cfg.app.node_short_name}")
-    run_meshtastic_cli(["--port", port, "--set-owner-short", cfg.app.node_short_name], "force")
+    run_meshtastic_cli(
+        local_args(port, "--set-owner-short", cfg.app.node_short_name),
+        "force",
+    )
 
     print("[force] rebooting radio")
-    run_meshtastic_cli(["--port", port, "--reboot"], "force")
+    run_meshtastic_cli(local_args(port, "--reboot"), "force")
     wait_after_reboot()
 
     print("[force] running doctor")
