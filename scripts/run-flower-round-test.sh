@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${1:-${FLOWER_CONFIG:-config.flower.yaml}}"
 PY="${ROOT_DIR}/.venv/bin/python"
 MESHNET="${ROOT_DIR}/meshnet"
+MESHTASTIC_CLI="${PY%/*}/meshtastic"
 
 if [[ ! -x "${PY}" ]]; then
   echo "[run] Missing venv. Run: cd ${ROOT_DIR} && ./install.sh" >&2
@@ -40,6 +41,48 @@ print(
 )
 PY
 )
+
+case "${ROLE}" in
+  master) LOG_ROLE="central" ;;
+  slave) LOG_ROLE="client" ;;
+  *) LOG_ROLE="unknown" ;;
+esac
+
+ROUNDS="${ROUNDS:-1}"
+LOGICAL_CLIENTS="${LOGICAL_CLIENTS:-1}"
+EVALUATE="${EVALUATE:-1}"
+MODEL_BYTES="${MODEL_BYTES:-}"
+WEIGHTS_NPZ="${WEIGHTS_NPZ:-}"
+STATUS_INTERVAL="${STATUS_INTERVAL:-10}"
+CAPTURE_RADIO_INFO="${CAPTURE_RADIO_INFO:-1}"
+JOURNAL_SINCE="${JOURNAL_SINCE:-2 hours ago}"
+BRIDGE_METRICS_INTERVAL="${STATUS_INTERVAL}"
+if [[ "${BRIDGE_METRICS_INTERVAL}" == "0" || "${BRIDGE_METRICS_INTERVAL}" == "false" ]]; then
+  BRIDGE_METRICS_INTERVAL=60
+fi
+
+HOST_SHORT="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)"
+HOST_SHORT="${HOST_SHORT//[^A-Za-z0-9_.-]/_}"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-${HOST_SHORT}-$$"
+RUN_DIR="${ROOT_DIR}/logs/${LOG_ROLE}/${RUN_ID}"
+RUN_LOG="${RUN_DIR}/runner.log"
+STATUS_LOG="${RUN_DIR}/status.log"
+STATUS_JSONL="${RUN_DIR}/status.jsonl"
+BRIDGE_LOG="${RUN_DIR}/bridge.log"
+BENCH_LOG="${RUN_DIR}/benchmark.log"
+BENCH_JSONL="${RUN_DIR}/benchmark.jsonl"
+RADIO_INFO_LOG="${RUN_DIR}/radio-info.log"
+SYSTEMD_BEFORE_LOG="${RUN_DIR}/systemd-before.log"
+SYSTEMD_AFTER_LOG="${RUN_DIR}/systemd-after.log"
+METADATA_FILE="${RUN_DIR}/metadata.txt"
+REDACTED_CONFIG="${RUN_DIR}/config.redacted.yaml"
+METRICS_FINAL="${RUN_DIR}/metrics-final.json"
+ALL_LOG="${RUN_DIR}/all.log"
+
+mkdir -p "${RUN_DIR}"
+exec > >(tee -a "${RUN_LOG}") 2>&1
+
+echo "[run] log_bundle=${RUN_DIR}"
 
 "${PY}" - "${CONFIG}" <<'PY'
 import sys, yaml
@@ -104,19 +147,139 @@ from pathlib import Path
 print(str(Path(sys.argv[1]).expanduser().resolve().with_suffix(".bridge-metrics.json")))
 PY
 )"
-ROUNDS="${ROUNDS:-1}"
-LOGICAL_CLIENTS="${LOGICAL_CLIENTS:-1}"
-EVALUATE="${EVALUATE:-1}"
-MODEL_BYTES="${MODEL_BYTES:-}"
-WEIGHTS_NPZ="${WEIGHTS_NPZ:-}"
-STATUS_INTERVAL="${STATUS_INTERVAL:-10}"
-BRIDGE_METRICS_INTERVAL="${STATUS_INTERVAL}"
-if [[ "${BRIDGE_METRICS_INTERVAL}" == "0" || "${BRIDGE_METRICS_INTERVAL}" == "false" ]]; then
-  BRIDGE_METRICS_INTERVAL=60
-fi
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
-BRIDGE_LOG="flower-bridge-${ROLE}-${RUN_ID}.log"
-BENCH_JSONL="flower-round-${ROLE}-${RUN_ID}.jsonl"
+
+redact_config() {
+  "${PY}" - "${CONFIG}" "${REDACTED_CONFIG}" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+with source.open(encoding="utf-8") as fh:
+    cfg = yaml.safe_load(fh)
+
+def redact(mapping, key):
+    if isinstance(mapping, dict) and key in mapping:
+        mapping[key] = "<redacted>" if mapping[key] else ""
+
+redact(cfg.get("network", {}), "network_password")
+redact(cfg.get("radio", {}), "channel_psk_base64")
+redact(cfg.get("telegram", {}), "bot_token")
+redact(cfg.get("telegram", {}), "allowed_chat_id")
+
+target.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+PY
+}
+
+write_metadata() {
+  {
+    echo "run_id=${RUN_ID}"
+    echo "role=${ROLE}"
+    echo "log_role=${LOG_ROLE}"
+    echo "started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "hostname=$(hostname 2>/dev/null || true)"
+    echo "uname=$(uname -a 2>/dev/null || true)"
+    echo "cwd=${ROOT_DIR}"
+    echo "config=${CONFIG}"
+    echo "listen=${LISTEN_HOST}:${LISTEN_PORT}"
+    echo "upstream=${UPSTREAM_HOST}:${UPSTREAM_PORT}"
+    echo "rounds=${ROUNDS}"
+    echo "logical_clients=${LOGICAL_CLIENTS}"
+    echo "evaluate=${EVALUATE}"
+    echo "model_bytes=${MODEL_BYTES:-benchmark-default}"
+    echo "weights_npz=${WEIGHTS_NPZ:-}"
+    echo "status_interval=${STATUS_INTERVAL}"
+    echo "bridge_metrics_interval=${BRIDGE_METRICS_INTERVAL}"
+    echo "capture_radio_info=${CAPTURE_RADIO_INFO}"
+    echo "journal_since=${JOURNAL_SINCE}"
+    echo "python=$("${PY}" --version 2>&1)"
+    echo "meshtastic_cli=${MESHTASTIC_CLI}"
+    echo "git_branch=$(git branch --show-current 2>/dev/null || true)"
+    echo "git_commit=$(git rev-parse HEAD 2>/dev/null || true)"
+    echo "git_remote=$(git remote get-url origin 2>/dev/null || true)"
+    echo
+    echo "git_status:"
+    git status -sb 2>/dev/null || true
+    echo
+    echo "serial_devices:"
+    ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null || true
+  } >> "${METADATA_FILE}" 2>&1
+}
+
+capture_systemd_logs() {
+  local phase="$1"
+  local outfile="$2"
+  {
+    echo "===== systemd ${phase} $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
+    if command -v journalctl >/dev/null 2>&1; then
+      journalctl --no-pager --since "${JOURNAL_SINCE}" \
+        -u meshnet-flower-bridge \
+        -u meshnet \
+        -u meshnet-telegram 2>&1 || true
+    else
+      echo "journalctl unavailable on this host"
+    fi
+  } >> "${outfile}" 2>&1
+}
+
+capture_radio_info() {
+  {
+    echo "===== radio-info $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
+    if [[ "${CAPTURE_RADIO_INFO}" == "0" || "${CAPTURE_RADIO_INFO}" == "false" ]]; then
+      echo "disabled by CAPTURE_RADIO_INFO=${CAPTURE_RADIO_INFO}"
+      return
+    fi
+    local port_output=""
+    local detect_status=0
+    set +e
+    port_output="$("${MESHNET}" detect --plain 2>&1)"
+    detect_status=$?
+    set -e
+    echo "detect_exit=${detect_status}"
+    echo "detect_output=${port_output}"
+    if [[ "${detect_status}" -ne 0 || "${port_output}" != /dev/* ]]; then
+      echo "radio info skipped because serial detect did not return a /dev path"
+      return
+    fi
+    if [[ ! -x "${MESHTASTIC_CLI}" ]]; then
+      echo "radio info skipped because meshtastic CLI is missing: ${MESHTASTIC_CLI}"
+      return
+    fi
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 90 "${MESHTASTIC_CLI}" --port "${port_output}" --no-nodes --info 2>&1 || true
+    else
+      "${MESHTASTIC_CLI}" --port "${port_output}" --no-nodes --info 2>&1 || true
+    fi
+  } >> "${RADIO_INFO_LOG}" 2>&1
+}
+
+write_all_log() {
+  local tmp="${ALL_LOG}.tmp"
+  {
+    for file in \
+      "${METADATA_FILE}" \
+      "${REDACTED_CONFIG}" \
+      "${RADIO_INFO_LOG}" \
+      "${SYSTEMD_BEFORE_LOG}" \
+      "${STATUS_LOG}" \
+      "${STATUS_JSONL}" \
+      "${BENCH_LOG}" \
+      "${BENCH_JSONL}" \
+      "${BRIDGE_LOG}" \
+      "${METRICS_FINAL}" \
+      "${SYSTEMD_AFTER_LOG}" \
+      "${RUN_LOG}"
+    do
+      if [[ -f "${file}" ]]; then
+        echo
+        echo "===== $(basename "${file}") ====="
+        cat "${file}"
+      fi
+    done
+  } > "${tmp}" 2>&1 || true
+  mv "${tmp}" "${ALL_LOG}" 2>/dev/null || true
+}
 
 stop_services() {
   sudo systemctl stop meshnet-flower-bridge 2>/dev/null || true
@@ -124,7 +287,13 @@ stop_services() {
   sudo systemctl stop meshnet-telegram 2>/dev/null || true
 }
 
+cleanup_done=0
 cleanup() {
+  local status="${1:-$?}"
+  if [[ "${cleanup_done}" == "1" ]]; then
+    return
+  fi
+  cleanup_done=1
   if [[ -n "${STATUS_PID:-}" ]] && kill -0 "${STATUS_PID}" 2>/dev/null; then
     kill "${STATUS_PID}" 2>/dev/null || true
     wait "${STATUS_PID}" 2>/dev/null || true
@@ -133,24 +302,69 @@ cleanup() {
     kill "${BRIDGE_PID}" 2>/dev/null || true
     wait "${BRIDGE_PID}" 2>/dev/null || true
   fi
+  if [[ -f "${METRICS_FILE:-}" ]]; then
+    cp "${METRICS_FILE}" "${METRICS_FINAL}" 2>/dev/null || true
+  fi
+  capture_systemd_logs "after" "${SYSTEMD_AFTER_LOG}"
+  {
+    echo
+    echo "finished_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "exit_status=${status}"
+  } >> "${METADATA_FILE}" 2>&1 || true
+  write_all_log
+  echo "[run] log_bundle=${RUN_DIR}"
+  echo "[run] all_log=${ALL_LOG}"
+  echo "[run] push_latest_logs=./scripts/push-latest-flower-logs.sh ${LOG_ROLE}"
 }
-trap cleanup EXIT INT TERM
+trap 'status=$?; cleanup "${status}"; exit "${status}"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 start_status_log() {
   if [[ "${STATUS_INTERVAL}" == "0" || "${STATUS_INTERVAL}" == "false" ]]; then
     return
   fi
   echo "[run] concise status every ${STATUS_INTERVAL}s; set STATUS_INTERVAL=0 to hide it"
-  "${PY}" - "${METRICS_FILE}" "${STATUS_INTERVAL}" "${ROLE}" <<'PY' &
+  "${PY}" - "${METRICS_FILE}" "${STATUS_INTERVAL}" "${ROLE}" "${STATUS_LOG}" "${STATUS_JSONL}" <<'PY' &
 import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 path = Path(sys.argv[1])
 interval = float(sys.argv[2])
 role = sys.argv[3]
+status_log = Path(sys.argv[4])
+status_jsonl = Path(sys.argv[5])
 previous = {}
+
+keys = [
+    "active_connections",
+    "pending_bytes",
+    "frames_sent",
+    "frames_received",
+    "control_frames_attempted",
+    "control_frames_sent",
+    "control_frames_received",
+    "local_bytes_received",
+    "local_bytes_sent",
+    "stream_bytes_queued",
+    "stream_send_window_calls",
+    "stream_send_window_active",
+    "stream_send_window_empty",
+    "stream_send_window_errors",
+    "stream_window_bytes_sent",
+    "data_bytes_attempted",
+    "data_bytes_sent",
+    "data_bytes_received",
+    "acknowledgements_sent",
+    "acknowledgements_received",
+    "retransmitted_frames",
+    "invalid_frames",
+    "sessions_opened",
+    "sessions_reset",
+]
 
 def number(metrics, key):
     return int(metrics.get(key, 0) or 0)
@@ -201,24 +415,42 @@ def diagnose(metrics):
         return "tcp_bytes_flowing"
     return "active_waiting"
 
+def append_line(line):
+    print(line, flush=True)
+    with status_log.open("a", encoding="utf-8") as fh:
+        print(line, file=fh, flush=True)
+
+def append_json(event):
+    with status_jsonl.open("a", encoding="utf-8") as fh:
+        json.dump(event, fh, sort_keys=True)
+        fh.write("\n")
+        fh.flush()
+
 while True:
     time.sleep(interval)
+    ts = datetime.now(timezone.utc).isoformat()
     if not path.exists():
-        print("[status] waiting_for_bridge_metrics", flush=True)
+        line = "[status] waiting_for_bridge_metrics"
+        append_line(line)
+        append_json({"ts_utc": ts, "event": "waiting_for_bridge_metrics"})
         continue
     try:
         metrics = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
-        print(f"[status] metrics_read_failed={exc}", flush=True)
+        line = f"[status] metrics_read_failed={exc}"
+        append_line(line)
+        append_json({"ts_utc": ts, "event": "metrics_read_failed", "error": str(exc)})
         continue
 
     def delta(key):
         return number(metrics, key) - number(previous, key)
 
+    diagnosis = diagnose(metrics)
     uptime = metrics.get("uptime_seconds", 0)
-    print(
+    delta_map = {key: delta(key) for key in keys}
+    line = (
         "[status] "
-        f"diagnosis={diagnose(metrics)} "
+        f"diagnosis={diagnosis} "
         f"up={uptime}s "
         f"conns={number(metrics, 'active_connections')} "
         f"pending={number(metrics, 'pending_bytes')}B "
@@ -243,13 +475,46 @@ while True:
         f"retrans={number(metrics, 'retransmitted_frames')}(+{delta('retransmitted_frames')}) "
         f"invalid={number(metrics, 'invalid_frames')}(+{delta('invalid_frames')}) "
         f"opened={number(metrics, 'sessions_opened')} "
-        f"resets={number(metrics, 'sessions_reset')}",
-        flush=True,
+        f"resets={number(metrics, 'sessions_reset')}"
+    )
+    append_line(line)
+    append_json(
+        {
+            "ts_utc": ts,
+            "event": "status",
+            "diagnosis": diagnosis,
+            "role": role,
+            "metrics": metrics,
+            "delta": delta_map,
+        }
     )
     previous = metrics
 PY
   STATUS_PID="$!"
 }
+
+run_benchmark() {
+  local status=0
+  set +e
+  {
+    echo "===== benchmark command $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
+    printf "[command]"
+    printf " %q" "$@"
+    echo
+    "$@"
+  } 2>&1 | tee -a "${BENCH_LOG}"
+  status="${PIPESTATUS[0]}"
+  set -e
+  if [[ "${status}" -ne 0 ]]; then
+    echo "[run] benchmark failed with exit ${status}. Last bridge log lines:" >&2
+    tail -n 160 "${BRIDGE_LOG}" >&2 || true
+    exit "${status}"
+  fi
+}
+
+redact_config
+write_metadata
+capture_systemd_logs "before" "${SYSTEMD_BEFORE_LOG}"
 
 echo "[run] role=${ROLE} config=${CONFIG}"
 echo "[run] rounds=${ROUNDS} logical_clients=${LOGICAL_CLIENTS} evaluate=${EVALUATE}"
@@ -261,11 +526,15 @@ elif [[ -n "${MODEL_BYTES}" ]]; then
 else
   echo "[run] model_bytes=benchmark-default"
 fi
+echo "[run] run_log=${RUN_LOG}"
+echo "[run] status_log=${STATUS_LOG}"
 echo "[run] bridge_log=${BRIDGE_LOG}"
+echo "[run] benchmark_log=${BENCH_LOG}"
 echo "[run] jsonl=${BENCH_JSONL}"
 echo "[run] metrics_file=${METRICS_FILE}"
 
 stop_services
+capture_radio_info
 rm -f "${METRICS_FILE}"
 
 echo "[run] starting bridge"
@@ -276,21 +545,11 @@ sleep 5
 
 if ! kill -0 "${BRIDGE_PID}" 2>/dev/null; then
   echo "[run] bridge exited early. Last bridge log lines:" >&2
-  tail -n 80 "${BRIDGE_LOG}" >&2 || true
+  tail -n 120 "${BRIDGE_LOG}" >&2 || true
   exit 1
 fi
 
 start_status_log
-
-run_benchmark() {
-  local status=0
-  "$@" || status=$?
-  if [[ "${status}" -ne 0 ]]; then
-    echo "[run] benchmark failed with exit ${status}. Last bridge log lines:" >&2
-    tail -n 120 "${BRIDGE_LOG}" >&2 || true
-    exit "${status}"
-  fi
-}
 
 BENCH_ARGS=()
 if [[ "${EVALUATE}" == "0" || "${EVALUATE}" == "false" ]]; then

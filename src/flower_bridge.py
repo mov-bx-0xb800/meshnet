@@ -66,7 +66,19 @@ class RadioFrameTransport:
             remaining = self._next_send - time.monotonic()
             if remaining > 0:
                 time.sleep(remaining)
-            self.radio.send_bytes(payload, destination_id=mesh_id, want_ack=False)
+            logger.line(
+                "bridge-radio",
+                f"tx attempt peer={peer_id} mesh={mesh_id.lower()} bytes={len(payload)}",
+            )
+            started = time.monotonic()
+            sent = self.radio.send_bytes(payload, destination_id=mesh_id, want_ack=False)
+            elapsed = time.monotonic() - started
+            logger.line(
+                "bridge-radio",
+                "tx accepted "
+                f"peer={peer_id} mesh={mesh_id.lower()} bytes={len(payload)} "
+                f"packet_id={sent.packet_id or '?'} elapsed={elapsed:.3f}s",
+            )
             full_interval = self.cfg.bridge.frame_interval_ms / 1000.0
             # Full data frames need the configured SHORT_FAST airtime spacing.
             # Compact ACK/control frames need much less airtime, but retain a
@@ -79,6 +91,10 @@ class RadioFrameTransport:
             return
         mesh_id = packet_from_mesh_id(packet).lower()
         peer_id = self.cfg.app_id_for_mesh(mesh_id)
+        logger.line(
+            "bridge-radio",
+            f"rx peer={peer_id or 'unpinned'} mesh={mesh_id or '?'} bytes={len(payload)}",
+        )
         if peer_id is None:
             configured = ", ".join(
                 f"{peer.app_id}={peer.mesh_id.lower()}" for peer in self.cfg.network.peers
@@ -321,6 +337,7 @@ class FlowerBridge:
         if not self._running.is_set():
             return
         self._running.clear()
+        self._publish_metrics()
         if self._listener is not None:
             try:
                 self._listener.close()
@@ -335,7 +352,9 @@ class FlowerBridge:
         self.transport.stop()
 
     def _send_frame(self, peer_id: str, frame: StreamFrame) -> None:
-        self.transport.send(peer_id, encode_frame(frame, self.key))
+        encoded = encode_frame(frame, self.key)
+        logger.line("bridge-frame", f"tx {self._frame_summary(peer_id, frame, len(encoded))}")
+        self.transport.send(peer_id, encoded)
 
     def _send_control(
         self,
@@ -386,6 +405,7 @@ class FlowerBridge:
                 "bridge-control",
                 f"rx {frame.frame_type.name} peer={peer_id} session={frame.session_id}",
             )
+        logger.line("bridge-frame", f"rx {self._frame_summary(peer_id, frame, len(payload))}")
 
         if frame.frame_type in {FrameType.DATA, FrameType.ACK}:
             connection = self._connection_for(peer_id, frame.session_id)
@@ -717,13 +737,14 @@ class FlowerBridge:
     def _metrics_reporter(self) -> None:
         interval = self.cfg.bridge.metrics_interval_seconds
         while self._running.is_set():
+            self._publish_metrics()
             time.sleep(interval)
-            if not self._running.is_set():
-                return
-            snapshot = self.metrics.snapshot()
-            snapshot.update(self._connection_metrics())
-            logger.line("bridge-metrics", json.dumps(snapshot, sort_keys=True))
-            self._write_metrics(snapshot)
+
+    def _publish_metrics(self) -> None:
+        snapshot = self.metrics.snapshot()
+        snapshot.update(self._connection_metrics())
+        logger.line("bridge-metrics", json.dumps(snapshot, sort_keys=True))
+        self._write_metrics(snapshot)
 
     def _connection_metrics(self) -> dict[str, int]:
         with self._connections_lock:
@@ -754,6 +775,15 @@ class FlowerBridge:
         while session_id == 0:
             session_id = secrets.randbits(32)
         return session_id
+
+    @staticmethod
+    def _frame_summary(peer_id: str, frame: StreamFrame, encoded_bytes: int) -> str:
+        return (
+            f"{frame.frame_type.name} peer={peer_id} session={frame.session_id} "
+            f"seq={frame.sequence} ack={frame.ack} sack=0x{frame.sack:08x} "
+            f"flags=0x{frame.flags:02x} payload={len(frame.payload)}B "
+            f"encoded={encoded_bytes}B"
+        )
 
 
 def run_flower_bridge(cfg: MeshConfig) -> None:
