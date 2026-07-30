@@ -61,6 +61,10 @@ Start central first and then client:
 ./scripts/run-flower-round-test.sh
 ```
 
+The runner is offline-only: application TCP is loopback, transport is the
+attached LoRa radio, Meshtastic's PyPI version check is disabled, and logs are
+archived locally without any automatic Git/GitHub publish.
+
 The two nodes must use the same git commit and the same Meshtastic firmware
 line. The full run has an absolute packet-pacing floor of about `55 minutes`
 and will take longer with USB queueing, scheduler waits, retransmissions, or

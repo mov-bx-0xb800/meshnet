@@ -6,6 +6,7 @@ CONFIG="${1:-${FLOWER_CONFIG:-config.flower.yaml}}"
 PY="${ROOT_DIR}/.venv/bin/python"
 MESHNET="${ROOT_DIR}/meshnet"
 MESHTASTIC_CLI="${PY%/*}/meshtastic"
+MESHTASTIC_INFO="${ROOT_DIR}/scripts/meshtastic-info-offline.py"
 
 if [[ ! -x "${PY}" ]]; then
   echo "[run] Missing venv. Run: cd ${ROOT_DIR} && ./install.sh" >&2
@@ -61,11 +62,6 @@ STATUS_INTERVAL="${STATUS_INTERVAL:-10}"
 CAPTURE_RADIO_INFO="${CAPTURE_RADIO_INFO:-1}"
 EXPORT_LOG_ARCHIVE="${EXPORT_LOG_ARCHIVE:-1}"
 EXPORT_DIR="${EXPORT_DIR:-${ROOT_DIR}/exports}"
-AUTO_PUBLISH_LOGS="${AUTO_PUBLISH_LOGS:-1}"
-AUTO_LOG_PUSH="${AUTO_LOG_PUSH:-1}"
-AUTO_LOG_DIRECT_PUSH="${AUTO_LOG_DIRECT_PUSH:-1}"
-AUTO_LOG_PR="${AUTO_LOG_PR:-1}"
-AUTO_LOG_BASE_BRANCH="${AUTO_LOG_BASE_BRANCH:-}"
 JOURNAL_SINCE="${JOURNAL_SINCE:-2 hours ago}"
 BRIDGE_METRICS_INTERVAL="${STATUS_INTERVAL}"
 if [[ "${BRIDGE_METRICS_INTERVAL}" == "0" || "${BRIDGE_METRICS_INTERVAL}" == "false" ]]; then
@@ -90,7 +86,6 @@ REDACTED_CONFIG="${RUN_DIR}/config.redacted.yaml"
 METRICS_FINAL="${RUN_DIR}/metrics-final.json"
 ALL_LOG="${RUN_DIR}/all.log"
 ARCHIVE_FILE="${EXPORT_DIR}/flower-logs-${LOG_ROLE}-${RUN_ID}.tar.gz"
-PUBLISH_LOG="${ROOT_DIR}/.git/meshnet-log-publish-${RUN_ID}.log"
 
 mkdir -p "${RUN_DIR}"
 exec > >(tee -a "${RUN_LOG}") 2>&1
@@ -210,13 +205,8 @@ write_metadata() {
     echo "capture_radio_info=${CAPTURE_RADIO_INFO}"
     echo "export_log_archive=${EXPORT_LOG_ARCHIVE}"
     echo "archive_file=${ARCHIVE_FILE}"
-    echo "auto_publish_logs=${AUTO_PUBLISH_LOGS}"
-    echo "auto_log_push=${AUTO_LOG_PUSH}"
-    echo "auto_log_direct_push=${AUTO_LOG_DIRECT_PUSH}"
-    echo "auto_log_pr=${AUTO_LOG_PR}"
-    echo "auto_log_base_branch=${AUTO_LOG_BASE_BRANCH:-default}"
+    echo "offline_mode=1"
     echo "bridge_radio_destination_mode=${MESHNET_BRIDGE_RADIO_DESTINATION_MODE:-single_peer_broadcast}"
-    echo "publish_log=${PUBLISH_LOG}"
     echo "journal_since=${JOURNAL_SINCE}"
     echo "python=$("${PY}" --version 2>&1)"
     echo "meshtastic_cli=${MESHTASTIC_CLI}"
@@ -317,14 +307,14 @@ capture_radio_info() {
       echo "radio info skipped because serial detect did not return a /dev path"
       return
     fi
-    if [[ ! -x "${MESHTASTIC_CLI}" ]]; then
-      echo "radio info skipped because meshtastic CLI is missing: ${MESHTASTIC_CLI}"
+    if [[ ! -f "${MESHTASTIC_INFO}" ]]; then
+      echo "radio info skipped because offline info wrapper is missing: ${MESHTASTIC_INFO}"
       return
     fi
     if command -v timeout >/dev/null 2>&1; then
-      timeout 90 "${MESHTASTIC_CLI}" --port "${port_output}" --no-nodes --info 2>&1 || true
+      timeout 90 "${PY}" "${MESHTASTIC_INFO}" "${port_output}" 2>&1 || true
     else
-      "${MESHTASTIC_CLI}" --port "${port_output}" --no-nodes --info 2>&1 || true
+      "${PY}" "${MESHTASTIC_INFO}" "${port_output}" 2>&1 || true
     fi
   } >> "${RADIO_INFO_LOG}" 2>&1
   redact_log_file "${RADIO_INFO_LOG}"
@@ -374,32 +364,6 @@ export_log_archive() {
   fi
 }
 
-auto_publish_logs() {
-  if [[ "${AUTO_PUBLISH_LOGS}" == "0" || "${AUTO_PUBLISH_LOGS}" == "false" || "${AUTO_PUBLISH_LOGS}" == "no" ]]; then
-    return
-  fi
-  if [[ ! -d "${ROOT_DIR}/.git" ]]; then
-    return
-  fi
-  if [[ ! -x "${ROOT_DIR}/scripts/push-latest-flower-logs.sh" ]]; then
-    return
-  fi
-  mkdir -p "$(dirname "${PUBLISH_LOG}")"
-  {
-    echo "===== auto publish $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
-    echo "run_dir=${RUN_DIR}"
-    set +e
-    AUTO_LOG_DIRECT_PUSH="${AUTO_LOG_DIRECT_PUSH}" \
-      AUTO_LOG_PUSH="${AUTO_LOG_PUSH}" \
-      AUTO_LOG_PR="${AUTO_LOG_PR}" \
-      AUTO_LOG_BASE_BRANCH="${AUTO_LOG_BASE_BRANCH}" \
-      "${ROOT_DIR}/scripts/push-latest-flower-logs.sh" "${LOG_ROLE}" "${RUN_DIR}"
-    local publish_status=$?
-    set -e
-    echo "exit_status=${publish_status}"
-  } > "${PUBLISH_LOG}" 2>&1 || true
-}
-
 stop_services() {
   sudo systemctl stop meshnet-flower-bridge 2>/dev/null || true
   sudo systemctl stop meshnet 2>/dev/null || true
@@ -433,12 +397,9 @@ cleanup() {
   echo "[run] log_bundle=${RUN_DIR}"
   echo "[run] all_log=${ALL_LOG}"
   echo "[run] archive=${ARCHIVE_FILE}"
-  echo "[run] auto_publish_logs=${AUTO_PUBLISH_LOGS}"
-  echo "[run] publish_log=${PUBLISH_LOG}"
   echo "[run] manual_push_latest_logs=./scripts/push-latest-flower-logs.sh ${LOG_ROLE}"
   write_all_log
   export_log_archive
-  auto_publish_logs
 }
 trap 'status=$?; cleanup "${status}"; exit "${status}"' EXIT
 trap 'exit 130' INT
@@ -655,6 +616,7 @@ write_metadata
 capture_systemd_logs "before" "${SYSTEMD_BEFORE_LOG}"
 
 echo "[run] role=${ROLE} config=${CONFIG}"
+echo "[run] offline_mode=1 (loopback TCP + attached LoRa only; no auto-publish)"
 echo "[run] rounds=${ROUNDS} logical_clients=${LOGICAL_CLIENTS} evaluate=${EVALUATE}"
 echo "[run] bridge_payload_bytes=${BRIDGE_PAYLOAD_BYTES} bridge_window_size=${BRIDGE_WINDOW_SIZE} frame_interval_ms=${BRIDGE_FRAME_INTERVAL_MS}"
 echo "[run] status_interval=${STATUS_INTERVAL}"

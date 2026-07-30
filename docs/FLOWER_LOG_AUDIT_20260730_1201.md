@@ -100,6 +100,10 @@ evaluation enabled
 At 400 ms pacing, packet pacing alone is at least 55.3 minutes. Real elapsed
 time will be longer.
 
+The runner performs no automatic network publication. It uses loopback TCP,
+the attached LoRa radio, an offline Meshtastic info wrapper, and local log
+archives only.
+
 ## Remaining Hardware Risk
 
 The radio firmware still differs:
