@@ -28,6 +28,7 @@ class FlowerRoundBenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(plan.poll_done_frames, 78)
         self.assertEqual(plan.approx_packets, 461)
         self.assertAlmostEqual(plan.payload_seconds_at_target, 69.589, places=3)
+        self.assertAlmostEqual(plan.minimum_schedule_seconds, 203.9, places=3)
 
     def test_two_client_full_round_plan_with_evaluate(self) -> None:
         plan = benchmark.round_plan(
@@ -45,6 +46,22 @@ class FlowerRoundBenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(plan.windows_per_round, 234)
         self.assertEqual(plan.approx_packets_per_round, 2_766)
         self.assertAlmostEqual(plan.payload_seconds_per_round_at_target, 417.531, places=3)
+        self.assertAlmostEqual(plan.minimum_schedule_seconds_per_round, 1_223.4, places=3)
+        self.assertAlmostEqual(plan.total_minimum_schedule_seconds, 1_223.4, places=3)
+
+    def test_complete_three_round_plan_surfaces_hour_scale_schedule(self) -> None:
+        plan = benchmark.round_plan(
+            48_712,
+            rounds=3,
+            logical_clients=2,
+            include_evaluate=True,
+            payload_bytes=160,
+            window_size=8,
+            frame_interval_ms=400,
+            poll_interval_ms=500,
+        )
+
+        self.assertAlmostEqual(plan.total_minimum_schedule_seconds, 3_670.2, places=3)
 
     def test_two_client_fit_only_round_plan(self) -> None:
         plan = benchmark.round_plan(
@@ -62,6 +79,29 @@ class FlowerRoundBenchmarkPlanTests(unittest.TestCase):
 
 
 class FlowerRoundBenchmarkProtocolTests(unittest.TestCase):
+    def test_peer_compatibility_rejects_git_and_firmware_mismatches(self) -> None:
+        errors = benchmark.peer_compatibility_errors(
+            local_git_commit="new",
+            local_firmware_version="2.7.15",
+            remote_git_commit="old",
+            remote_firmware_version="2.5.20",
+        )
+
+        self.assertEqual(len(errors), 2)
+        self.assertIn("git commit mismatch", errors[0])
+        self.assertIn("firmware mismatch", errors[1])
+
+    def test_peer_compatibility_allows_missing_probe_metadata(self) -> None:
+        self.assertEqual(
+            benchmark.peer_compatibility_errors(
+                local_git_commit="same",
+                local_firmware_version="",
+                remote_git_commit="same",
+                remote_firmware_version="2.5.20",
+            ),
+            [],
+        )
+
     def test_message_frame_round_trips_with_binary_payload(self) -> None:
         left, right = socket.socketpair()
         self.addCleanup(left.close)

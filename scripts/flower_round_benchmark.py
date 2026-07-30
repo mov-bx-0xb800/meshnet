@@ -40,6 +40,7 @@ class TransferPlan:
     poll_done_frames: int
     approx_packets: int
     payload_seconds_at_target: float
+    minimum_schedule_seconds: float
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,8 @@ class RoundPlan:
     approx_packets_per_round: int
     payload_seconds_per_round_at_target: float
     total_payload_seconds_at_target: float
+    minimum_schedule_seconds_per_round: float
+    total_minimum_schedule_seconds: float
     per_transfer: TransferPlan
 
 
@@ -100,6 +103,8 @@ def transfer_plan(
     payload_bytes: int = DEFAULT_PAYLOAD_BYTES,
     window_size: int = DEFAULT_WINDOW_SIZE,
     target_goodput_bps: float = DEFAULT_TARGET_GOODPUT_BPS,
+    frame_interval_ms: int = 400,
+    poll_interval_ms: int = 500,
 ) -> TransferPlan:
     if model_bytes < 1:
         raise ValueError("model bytes must be positive")
@@ -109,6 +114,10 @@ def transfer_plan(
         raise ValueError("window size must be positive")
     if target_goodput_bps <= 0:
         raise ValueError("target goodput must be positive")
+    if frame_interval_ms < 0:
+        raise ValueError("frame interval cannot be negative")
+    if poll_interval_ms < 0:
+        raise ValueError("poll interval cannot be negative")
 
     data_frames = ceildiv(model_bytes, payload_bytes)
     windows = ceildiv(data_frames, window_size)
@@ -127,6 +136,10 @@ def transfer_plan(
         poll_done_frames=poll_done_frames,
         approx_packets=approx_packets,
         payload_seconds_at_target=model_bytes / target_goodput_bps,
+        minimum_schedule_seconds=(
+            approx_packets * frame_interval_ms / 1000.0
+            + windows * poll_interval_ms / 1000.0
+        ),
     )
 
 
@@ -139,6 +152,8 @@ def round_plan(
     payload_bytes: int = DEFAULT_PAYLOAD_BYTES,
     window_size: int = DEFAULT_WINDOW_SIZE,
     target_goodput_bps: float = DEFAULT_TARGET_GOODPUT_BPS,
+    frame_interval_ms: int = 400,
+    poll_interval_ms: int = 500,
 ) -> RoundPlan:
     if rounds < 1:
         raise ValueError("rounds must be positive")
@@ -150,6 +165,8 @@ def round_plan(
         payload_bytes=payload_bytes,
         window_size=window_size,
         target_goodput_bps=target_goodput_bps,
+        frame_interval_ms=frame_interval_ms,
+        poll_interval_ms=poll_interval_ms,
     )
     transfers_per_client = 3 if include_evaluate else 2
     full_model_transfers_per_round = logical_clients * transfers_per_client
@@ -170,6 +187,12 @@ def round_plan(
         * full_model_transfers_per_round,
         payload_seconds_per_round_at_target=bytes_per_round / target_goodput_bps,
         total_payload_seconds_at_target=bytes_per_round * rounds / target_goodput_bps,
+        minimum_schedule_seconds_per_round=(
+            per_transfer.minimum_schedule_seconds * full_model_transfers_per_round
+        ),
+        total_minimum_schedule_seconds=(
+            per_transfer.minimum_schedule_seconds * total_full_model_transfers
+        ),
         per_transfer=per_transfer,
     )
 
@@ -251,6 +274,34 @@ def goodput(size: int, elapsed: float) -> float:
     return size / elapsed if elapsed > 0 else 0.0
 
 
+def peer_compatibility_errors(
+    *,
+    local_git_commit: str,
+    local_firmware_version: str,
+    remote_git_commit: str,
+    remote_firmware_version: str,
+) -> list[str]:
+    errors = []
+    if (
+        local_git_commit
+        and remote_git_commit
+        and local_git_commit != remote_git_commit
+    ):
+        errors.append(
+            f"git commit mismatch: local={local_git_commit} remote={remote_git_commit}"
+        )
+    if (
+        local_firmware_version
+        and remote_firmware_version
+        and local_firmware_version != remote_firmware_version
+    ):
+        errors.append(
+            "Meshtastic firmware mismatch: "
+            f"local={local_firmware_version} remote={remote_firmware_version}"
+        )
+    return errors
+
+
 def result_plan_fields(size: int, payload_bytes: int, window_size: int) -> dict[str, int]:
     plan = transfer_plan(size, payload_bytes=payload_bytes, window_size=window_size)
     return {
@@ -326,7 +377,10 @@ def print_event(event: dict[str, Any], writer: JsonlWriter) -> None:
             f"total_approx_packets={event['total_approx_packets']} "
             f"payload_only_seconds_per_round_at_{event['target_goodput_bytes_per_second']}Bps="
             f"{event['payload_seconds_per_round_at_target']} "
-            f"total_payload_only_seconds={event['total_payload_seconds_at_target']}",
+            f"total_payload_only_seconds={event['total_payload_seconds_at_target']} "
+            f"minimum_scheduled_seconds={event['total_minimum_schedule_seconds']} "
+            f"minimum_scheduled_minutes="
+            f"{event['total_minimum_schedule_seconds'] / 60.0:.1f}",
             flush=True,
         )
     elif event.get("event") == "client_config":
@@ -336,7 +390,11 @@ def print_event(event: dict[str, Any], writer: JsonlWriter) -> None:
             f"logical_clients={event['logical_clients']} "
             f"evaluate={event['include_evaluate']} "
             f"payload_bytes={event['payload_bytes']} "
-            f"window_size={event['window_size']}",
+            f"window_size={event['window_size']} "
+            f"frame_interval_ms={event['frame_interval_ms']} "
+            f"poll_interval_ms={event['poll_interval_ms']} "
+            f"minimum_scheduled_minutes="
+            f"{event['total_minimum_schedule_seconds'] / 60.0:.1f}",
             flush=True,
         )
     elif event.get("event") == "eval_metrics":
@@ -379,6 +437,15 @@ def plan_event(plan: RoundPlan, source: str, target_goodput_bps: float) -> dict[
         ),
         "total_payload_seconds_at_target": round(
             plan.total_payload_seconds_at_target, 3
+        ),
+        "minimum_schedule_seconds_per_transfer": round(
+            plan.per_transfer.minimum_schedule_seconds, 3
+        ),
+        "minimum_schedule_seconds_per_round": round(
+            plan.minimum_schedule_seconds_per_round, 3
+        ),
+        "total_minimum_schedule_seconds": round(
+            plan.total_minimum_schedule_seconds, 3
         ),
         "target_goodput_bytes_per_second": target_goodput_bps,
     }
@@ -659,6 +726,8 @@ def run_server(args: argparse.Namespace) -> int:
         payload_bytes=args.payload_bytes,
         window_size=args.window_size,
         target_goodput_bps=args.target_goodput,
+        frame_interval_ms=args.frame_interval_ms,
+        poll_interval_ms=args.poll_interval_ms,
     )
     print_event(plan_event(plan, source, args.target_goodput), writer)
     print(
@@ -677,6 +746,18 @@ def run_server(args: argparse.Namespace) -> int:
         header, payload, _elapsed = recv_message(connection)
         if payload or header.get("kind") != "hello":
             raise BenchmarkProtocolError("client did not send hello")
+        compatibility_errors = peer_compatibility_errors(
+            local_git_commit=args.git_commit,
+            local_firmware_version=args.firmware_version,
+            remote_git_commit=str(header.get("git_commit", "")),
+            remote_firmware_version=str(header.get("firmware_version", "")),
+        )
+        if compatibility_errors and not args.allow_peer_mismatch:
+            reason = "; ".join(compatibility_errors)
+            send_message(connection, {"kind": "error", "reason": reason})
+            raise BenchmarkProtocolError(reason)
+        for warning in compatibility_errors:
+            print(f"[warning] {warning}", flush=True)
         send_message(
             connection,
             {
@@ -688,6 +769,9 @@ def run_server(args: argparse.Namespace) -> int:
                 "payload_bytes": args.payload_bytes,
                 "window_size": args.window_size,
                 "target_goodput": args.target_goodput,
+                "frame_interval_ms": args.frame_interval_ms,
+                "poll_interval_ms": args.poll_interval_ms,
+                "total_minimum_schedule_seconds": plan.total_minimum_schedule_seconds,
             },
         )
         results: list[TransferResult] = []
@@ -852,9 +936,13 @@ def run_client(args: argparse.Namespace) -> int:
                 "role": "client",
                 "label": args.label,
                 "version": 1,
+                "git_commit": args.git_commit,
+                "firmware_version": args.firmware_version,
             },
         )
         header, payload, _elapsed = recv_message(connection)
+        if not payload and header.get("kind") == "error":
+            raise BenchmarkProtocolError(str(header.get("reason", "central rejected client")))
         if payload or header.get("kind") != "server_config":
             raise BenchmarkProtocolError("central did not return server_config")
         payload_bytes = int(header["payload_bytes"])
@@ -868,6 +956,11 @@ def run_client(args: argparse.Namespace) -> int:
                 "include_evaluate": bool(header["include_evaluate"]),
                 "payload_bytes": payload_bytes,
                 "window_size": window_size,
+                "frame_interval_ms": int(header["frame_interval_ms"]),
+                "poll_interval_ms": int(header["poll_interval_ms"]),
+                "total_minimum_schedule_seconds": float(
+                    header["total_minimum_schedule_seconds"]
+                ),
             },
             writer,
         )
@@ -938,6 +1031,8 @@ def run_plan(args: argparse.Namespace) -> int:
         payload_bytes=args.payload_bytes,
         window_size=args.window_size,
         target_goodput_bps=args.target_goodput,
+        frame_interval_ms=args.frame_interval_ms,
+        poll_interval_ms=args.poll_interval_ms,
     )
     print_event(plan_event(plan, source, args.target_goodput), writer)
     return 0
@@ -956,7 +1051,15 @@ def add_common_plan_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--payload-bytes", type=int, default=DEFAULT_PAYLOAD_BYTES)
     parser.add_argument("--window-size", type=int, default=DEFAULT_WINDOW_SIZE)
     parser.add_argument("--target-goodput", type=float, default=DEFAULT_TARGET_GOODPUT_BPS)
+    parser.add_argument("--frame-interval-ms", type=int, default=400)
+    parser.add_argument("--poll-interval-ms", type=int, default=500)
     parser.add_argument("--jsonl", default=None)
+
+
+def add_peer_identity_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--git-commit", default="")
+    parser.add_argument("--firmware-version", default="")
+    parser.add_argument("--allow-peer-mismatch", action="store_true")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -973,6 +1076,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     server = sub.add_parser("server", help="run on central behind the central bridge")
     add_common_plan_args(server)
+    add_peer_identity_args(server)
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=8081)
     server.add_argument("--timeout", type=float, default=1800.0)
@@ -986,6 +1090,7 @@ def build_parser() -> argparse.ArgumentParser:
     client.add_argument("--eval-sleep", type=float, default=0.0)
     client.add_argument("--jsonl", default=None)
     client.add_argument("--label", default=socket.gethostname())
+    add_peer_identity_args(client)
     return parser
 
 

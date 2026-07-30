@@ -16,14 +16,13 @@ config.flower.yaml
 *.bridge-metrics.json
 exports/
 
-!logs/
-!logs/**/
-!logs/**/*.log
-!logs/**/*.txt
-!logs/**/*.json
-!logs/**/*.jsonl
-!logs/**/*.yaml
-!logs/**/.gitkeep
+logs/*
+!logs/central/
+!logs/client/
+logs/central/*
+logs/client/*
+!logs/central/.gitkeep
+!logs/client/.gitkeep
 
 .DS_Store
 

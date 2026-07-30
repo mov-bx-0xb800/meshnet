@@ -122,16 +122,23 @@ At the old repo target of `700 B/s` worst-link application goodput:
 ```
 
 That `20.9 minute` figure is payload-only and is not reachable with the current
-packet schedule and `400 ms` frame pacing. Pacing `8,298` estimated packets
-alone takes at least:
+packet schedule. Pacing `8,298` estimated packets at `400 ms` takes:
 
 ```text
 8,298 * 0.400 = 3,319.2 seconds = about 55.3 minutes
 ```
 
-One model movement has a packet-pacing ceiling of about `264 B/s` before USB
-send acceptance time, poll delays, retries, and RF loss. The real full test can
-therefore take considerably longer than 55 minutes.
+The central scheduler also waits `500 ms` after each of the 702 planned
+windows:
+
+```text
+702 * 0.500 = 351.0 seconds = about 5.9 minutes
+minimum packet-and-poll schedule = about 61.2 minutes
+```
+
+One model movement has a schedule floor of about `203.9 seconds`, or `239 B/s`,
+before startup, scheduler guards, retries, and RF loss. The real full test can
+therefore take considerably longer than 61 minutes.
 
 The pacing floor still excludes:
 

@@ -159,8 +159,9 @@ For the initial field acceptance test, require:
 - ten consecutive complete three-round Flower runs before unattended use.
 
 The old `700 B/s` and `75 second` targets are invalid with 160-byte chunks and
-400 ms packet pacing. One movement needs about 461 packets, so pacing alone is
-at least 184.4 seconds before USB acceptance time, poll waits, or retries.
+400 ms packet pacing. One movement needs about 461 packets and 39 scheduled
+windows, so its packet-and-poll floor is about 203.9 seconds before startup,
+scheduler guards, or retries.
 Record the real clean-link baseline before setting a field goodput threshold.
 
 ## Bench verification

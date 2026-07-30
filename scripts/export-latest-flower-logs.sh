@@ -8,6 +8,7 @@ RUN_DIR_ARG="${2:-}"
 EXPORT_DIR="${EXPORT_DIR:-${ROOT_DIR}/exports}"
 SERVE="${SERVE:-0}"
 PORT="${PORT:-8765}"
+SERVE_BIND="${SERVE_BIND:-127.0.0.1}"
 
 if [[ ! -x "${PY}" ]]; then
   PY="$(command -v python3)"
@@ -77,7 +78,10 @@ PY
 print_urls() {
   local archive_name="$1"
   local hostnames=()
-  if command -v hostname >/dev/null 2>&1; then
+  if [[ "${SERVE_BIND}" != "0.0.0.0" && "${SERVE_BIND}" != "::" ]]; then
+    hostnames=("${SERVE_BIND}")
+  fi
+  if [[ "${#hostnames[@]}" -eq 0 ]] && command -v hostname >/dev/null 2>&1; then
     while IFS= read -r ip; do
       [[ -n "${ip}" ]] && hostnames+=("${ip}")
     done < <(hostname -I 2>/dev/null | tr ' ' '\n' | sed '/^$/d' || true)
@@ -120,8 +124,11 @@ fi
 echo "[export] easiest: attach this .tar.gz file here"
 
 if bool_enabled "${SERVE}"; then
-  echo "[export] serving ${EXPORT_DIR} on port ${PORT}; press Ctrl+C when downloaded"
+  echo "[export] serving ${EXPORT_DIR} on ${SERVE_BIND}:${PORT}; press Ctrl+C when downloaded"
+  if [[ "${SERVE_BIND}" == "0.0.0.0" || "${SERVE_BIND}" == "::" ]]; then
+    echo "[export] WARNING: archive is unauthenticated and reachable from the network"
+  fi
   print_urls "${ARCHIVE_NAME}"
   cd "${EXPORT_DIR}"
-  exec "${PY}" -m http.server "${PORT}" --bind 0.0.0.0
+  exec "${PY}" -m http.server "${PORT}" --bind "${SERVE_BIND}"
 fi

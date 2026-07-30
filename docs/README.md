@@ -11,6 +11,7 @@ Documents:
 - `IMPLEMENTATION_TODO.md` - concrete work items before any field or production use.
 - `FLOWER_ROUND_BENCHMARK.md` - two-node benchmark procedure for full Flower round transfer metrics.
 - `FLOWER_LOG_AUDIT_20260730_1201.md` - live two-node evidence for the half-duplex scheduling and maximum-frame failures.
+- `FLOWER_LOG_AUDIT_20260730_1222.md` - evidence that the next run was progressing, why its status was misleading, and the runner/pacing/log-safety fixes.
 
 Current short verdict:
 

@@ -259,6 +259,21 @@ def _env_int_or_config(section: Mapping[str, Any], key: str, env_key: str, defau
     return _int(section, key, default)
 
 
+def _env_float_or_config(
+    section: Mapping[str, Any],
+    key: str,
+    env_key: str,
+    default: float,
+) -> float:
+    value = os.getenv(env_key)
+    if value:
+        try:
+            return float(value)
+        except ValueError as exc:
+            raise ValueError(f"{env_key} must be a number") from exc
+    return _float(section, key, default)
+
+
 def _load_peers(network: Mapping[str, Any], app: Mapping[str, Any]) -> tuple[PeerConfig, ...]:
     raw_peers = network.get("peers")
     if raw_peers is None:
@@ -373,17 +388,42 @@ def load_config(path: str | os.PathLike[str]) -> MeshConfig:
                 "MESHNET_BRIDGE_PAYLOAD_BYTES",
                 160,
             ),
-            window_size=_int(bridge, "window_size", 8),
-            ack_timeout_seconds=_float(bridge, "ack_timeout_seconds", 5.0),
-            control_timeout_seconds=_float(bridge, "control_timeout_seconds", 10.0),
-            max_retries=_int(bridge, "max_retries", 8),
+            window_size=_env_int_or_config(
+                bridge,
+                "window_size",
+                "MESHNET_BRIDGE_WINDOW_SIZE",
+                8,
+            ),
+            ack_timeout_seconds=_env_float_or_config(
+                bridge,
+                "ack_timeout_seconds",
+                "MESHNET_BRIDGE_ACK_TIMEOUT_SECONDS",
+                5.0,
+            ),
+            control_timeout_seconds=_env_float_or_config(
+                bridge,
+                "control_timeout_seconds",
+                "MESHNET_BRIDGE_CONTROL_TIMEOUT_SECONDS",
+                10.0,
+            ),
+            max_retries=_env_int_or_config(
+                bridge,
+                "max_retries",
+                "MESHNET_BRIDGE_MAX_RETRIES",
+                8,
+            ),
             frame_interval_ms=_env_int_or_config(
                 bridge,
                 "frame_interval_ms",
                 "MESHNET_BRIDGE_FRAME_INTERVAL_MS",
                 400,
             ),
-            poll_interval_ms=_int(bridge, "poll_interval_ms", 500),
+            poll_interval_ms=_env_int_or_config(
+                bridge,
+                "poll_interval_ms",
+                "MESHNET_BRIDGE_POLL_INTERVAL_MS",
+                500,
+            ),
             max_buffer_bytes=_int(bridge, "max_buffer_bytes", 65536),
             metrics_interval_seconds=_env_int_or_config(
                 bridge,

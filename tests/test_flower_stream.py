@@ -465,6 +465,80 @@ class FlowerBridgeIntegrationTests(unittest.TestCase):
         self.assertEqual(fake.calls[0]["destination_id"], "!00000001")
         self.assertTrue(fake.calls[0]["want_ack"])
 
+    def test_radio_transport_paces_frame_starts_without_adding_usb_accept_time(self) -> None:
+        with patch.dict(os.environ, {"MESHNET_BRIDGE_FRAME_INTERVAL_MS": "400"}):
+            cfg = self._config(
+                name="central-pacing",
+                node_id="central-001",
+                role="master",
+                master_id="central-001",
+                slave_id="client-001",
+                peer_id="client-001",
+                peer_mesh="!00000001",
+                listen_port=free_port(),
+                upstream_port=self.echo_port,
+            )
+
+        class Clock:
+            def __init__(self) -> None:
+                self.now = 10.0
+                self.sleeps: list[float] = []
+                self.send_starts: list[float] = []
+
+            def monotonic(self) -> float:
+                return self.now
+
+            def sleep(self, seconds: float) -> None:
+                self.sleeps.append(seconds)
+                self.now += seconds
+
+        class TimedRadio(FakeRadio):
+            def __init__(self, clock: Clock) -> None:
+                super().__init__()
+                self.clock = clock
+
+            def send_bytes(self, *args, **kwargs) -> FakeSentPacket:
+                self.clock.send_starts.append(self.clock.now)
+                packet = super().send_bytes(*args, **kwargs)
+                self.clock.now += 0.1
+                return packet
+
+        clock = Clock()
+        transport = RadioFrameTransport(cfg)
+        transport.radio = TimedRadio(clock)
+        with (
+            patch("src.flower_bridge.time.monotonic", side_effect=clock.monotonic),
+            patch("src.flower_bridge.time.sleep", side_effect=clock.sleep),
+        ):
+            transport.send("client-001", b"one")
+            transport.send("client-001", b"two")
+
+        self.assertEqual(len(clock.send_starts), 2)
+        self.assertAlmostEqual(clock.send_starts[0], 10.0)
+        self.assertAlmostEqual(clock.send_starts[1], 10.4)
+        self.assertAlmostEqual(clock.sleeps[-1], 0.3)
+
+    def test_runner_bridge_profile_environment_overrides_stale_yaml(self) -> None:
+        env = {
+            "MESHNET_BRIDGE_PAYLOAD_BYTES": "160",
+            "MESHNET_BRIDGE_WINDOW_SIZE": "8",
+            "MESHNET_BRIDGE_ACK_TIMEOUT_SECONDS": "5",
+            "MESHNET_BRIDGE_CONTROL_TIMEOUT_SECONDS": "10",
+            "MESHNET_BRIDGE_MAX_RETRIES": "8",
+            "MESHNET_BRIDGE_FRAME_INTERVAL_MS": "400",
+            "MESHNET_BRIDGE_POLL_INTERVAL_MS": "500",
+        }
+        with patch.dict(os.environ, env):
+            cfg = load_config("config.flower-central.example.yaml")
+
+        self.assertEqual(cfg.bridge.payload_bytes, 160)
+        self.assertEqual(cfg.bridge.window_size, 8)
+        self.assertEqual(cfg.bridge.ack_timeout_seconds, 5.0)
+        self.assertEqual(cfg.bridge.control_timeout_seconds, 10.0)
+        self.assertEqual(cfg.bridge.max_retries, 8)
+        self.assertEqual(cfg.bridge.frame_interval_ms, 400)
+        self.assertEqual(cfg.bridge.poll_interval_ms, 500)
+
     def test_local_tcp_data_waits_for_the_scheduled_radio_turn(self) -> None:
         cfg = self._config(
             name="central-turns",

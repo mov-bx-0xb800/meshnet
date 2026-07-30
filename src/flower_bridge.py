@@ -4,6 +4,7 @@ import json
 import os
 import queue
 import secrets
+import signal
 import socket
 import threading
 import time
@@ -141,7 +142,11 @@ class RadioFrameTransport:
             # Use the configured pacing for every LoRa frame. The live logs
             # showed short control frames accepted by firmware but not received
             # by the peer when emitted in a fast burst.
-            self._next_send = time.monotonic() + interval
+            # ``frame_interval_ms`` is a start-to-start pacing interval. The
+            # Meshtastic API takes roughly 100 ms to accept a frame on the live
+            # Pis; adding the full interval after that call made every 400 ms
+            # setting behave like roughly 500 ms.
+            self._next_send = max(time.monotonic(), started + interval)
             radio_ack = "not_requested"
             radio_error = ""
             if want_ack and destination_id == BROADCAST_ADDR:
@@ -775,21 +780,23 @@ class FlowerBridge:
 
     def _on_local_eof(self, connection: BridgeConnection) -> None:
         def flush_and_close_write() -> None:
-            deadline = time.monotonic() + max(
-                30.0,
-                self.cfg.bridge.ack_timeout_seconds * (self.cfg.bridge.max_retries + 1),
-            )
             while (
                 self._running.is_set()
                 and not connection.closed.is_set()
                 and connection.stream.pending_bytes
-                and time.monotonic() < deadline
             ):
                 if self.is_central:
                     time.sleep(0.25)
                 else:
                     time.sleep(0.5)
-            if not connection.closed.is_set():
+            # A model-sized stream takes minutes over the live radio. Never
+            # emit HALF_CLOSE while acknowledged DATA is still pending merely
+            # because a short wall-clock deadline elapsed.
+            if (
+                self._running.is_set()
+                and not connection.closed.is_set()
+                and connection.stream.pending_bytes == 0
+            ):
                 try:
                     self._send_control(
                         connection.peer_id,
@@ -918,23 +925,36 @@ class FlowerBridge:
 
 
 def run_flower_bridge(cfg: MeshConfig) -> None:
+    previous_sigterm = None
+    if threading.current_thread() is threading.main_thread():
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def stop_on_sigterm(_signum: int, _frame: object) -> None:
+            raise KeyboardInterrupt
+
+        signal.signal(signal.SIGTERM, stop_on_sigterm)
+
     reconnects = 0
-    while True:
-        bridge = FlowerBridge(cfg)
-        try:
-            bridge.run_forever()
-            return
-        except KeyboardInterrupt:
-            return
-        except Exception as exc:
-            reconnects += 1
-            error = as_meshnet_error(exc, "bridge", attempts=reconnects)
-            log_meshnet_error(error, "bridge")
-            if not error.retryable or not cfg.runtime.runtime_reconnect or (
-                cfg.runtime.max_reconnect_attempts > 0
-                and reconnects >= cfg.runtime.max_reconnect_attempts
-            ):
-                raise error from exc
-            time.sleep(cfg.runtime.reconnect_delay_seconds)
-        finally:
-            bridge.stop()
+    try:
+        while True:
+            bridge = FlowerBridge(cfg)
+            try:
+                bridge.run_forever()
+                return
+            except KeyboardInterrupt:
+                return
+            except Exception as exc:
+                reconnects += 1
+                error = as_meshnet_error(exc, "bridge", attempts=reconnects)
+                log_meshnet_error(error, "bridge")
+                if not error.retryable or not cfg.runtime.runtime_reconnect or (
+                    cfg.runtime.max_reconnect_attempts > 0
+                    and reconnects >= cfg.runtime.max_reconnect_attempts
+                ):
+                    raise error from exc
+                time.sleep(cfg.runtime.reconnect_delay_seconds)
+            finally:
+                bridge.stop()
+    finally:
+        if previous_sigterm is not None:
+            signal.signal(signal.SIGTERM, previous_sigterm)

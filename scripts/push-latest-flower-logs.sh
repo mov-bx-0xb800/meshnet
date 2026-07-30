@@ -17,6 +17,12 @@ bool_enabled() {
   [[ "${value}" != "0" && "${value}" != "false" && "${value}" != "no" ]]
 }
 
+if ! bool_enabled "${PUBLISH_FLOWER_LOGS:-0}"; then
+  echo "[logs] Refusing to publish runtime logs without PUBLISH_FLOWER_LOGS=1." >&2
+  echo "[logs] Review the redacted archive first, then opt in explicitly." >&2
+  exit 2
+fi
+
 sanitize_ref() {
   "${PY}" - "$1" <<'PY'
 import re
@@ -212,9 +218,7 @@ if [[ ! -d .git ]]; then
   exit 0
 fi
 
-ORIGINAL_BRANCH="$(git branch --show-current 2>/dev/null || true)"
 WORKTREE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/meshnet-log-worktree.XXXXXX")"
-DIRECT_PUSHED=0
 PUBLISH_DONE=0
 
 cleanup() {
@@ -225,10 +229,6 @@ cleanup() {
   fi
   if [[ "${PUBLISH_DONE}" == "1" || "${push_enabled}" == "0" ]]; then
     git branch -D "${LOG_BRANCH}" >/dev/null 2>&1 || true
-  fi
-  if [[ "${DIRECT_PUSHED}" == "1" && "${ORIGINAL_BRANCH}" == "${BASE_BRANCH}" ]]; then
-    rm -rf "${RUN_DIR_ABS}" 2>/dev/null || true
-    git pull --ff-only origin "${BASE_BRANCH}" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -265,9 +265,8 @@ if ! bool_enabled "${AUTO_LOG_PUSH:-1}"; then
   exit 0
 fi
 
-if bool_enabled "${AUTO_LOG_DIRECT_PUSH:-1}"; then
+if bool_enabled "${AUTO_LOG_DIRECT_PUSH:-0}"; then
   if git -C "${WORKTREE_ROOT}" push origin "HEAD:${BASE_BRANCH}"; then
-    DIRECT_PUSHED=1
     PUBLISH_DONE=1
     echo "[logs] pushed logs directly to origin/${BASE_BRANCH}"
     exit 0
@@ -277,7 +276,6 @@ if bool_enabled "${AUTO_LOG_DIRECT_PUSH:-1}"; then
   if git -C "${WORKTREE_ROOT}" fetch origin "${BASE_BRANCH}" \
     && git -C "${WORKTREE_ROOT}" rebase "origin/${BASE_BRANCH}" \
     && git -C "${WORKTREE_ROOT}" push origin "HEAD:${BASE_BRANCH}"; then
-    DIRECT_PUSHED=1
     PUBLISH_DONE=1
     echo "[logs] pushed logs directly to origin/${BASE_BRANCH} after rebase"
     exit 0

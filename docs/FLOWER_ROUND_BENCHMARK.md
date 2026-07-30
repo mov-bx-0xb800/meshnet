@@ -52,7 +52,12 @@ ROUNDS=3
 LOGICAL_CLIENTS=2
 EVALUATE=1
 BRIDGE_PAYLOAD_BYTES=160
+BRIDGE_WINDOW_SIZE=8
+BRIDGE_ACK_TIMEOUT_SECONDS=5
+BRIDGE_CONTROL_TIMEOUT_SECONDS=10
+BRIDGE_MAX_RETRIES=8
 BRIDGE_FRAME_INTERVAL_MS=400
+BRIDGE_POLL_INTERVAL_MS=500
 ```
 
 Start central first and then client:
@@ -65,10 +70,19 @@ The runner is offline-only: application TCP is loopback, transport is the
 attached LoRa radio, Meshtastic's PyPI version check is disabled, and logs are
 archived locally without any automatic Git/GitHub publish.
 
+The runner enforces that profile even when a node's local `config.flower.yaml`
+still contains older bridge timing or retry values. It also restores only the
+systemd services that were active before the test.
+
 The two nodes must use the same git commit and the same Meshtastic firmware
-line. The full run has an absolute packet-pacing floor of about `55 minutes`
-and will take longer with USB queueing, scheduler waits, retransmissions, or
-poor RF.
+line. The full run has a packet-and-poll schedule floor of about `61.2 minutes`
+and will take longer with startup, scheduler guards, retransmissions, or poor
+RF. Status rows show acknowledged queue progress, current TX/RX rate, and an
+ETA for the current queued application message.
+
+The benchmark hello carries the local Git commit and detected radio firmware.
+A mismatch is rejected before model DATA starts. `ALLOW_PEER_MISMATCH=1` exists
+only for deliberate diagnostics; its result is not an acceptance run.
 
 For a short transport smoke test:
 
@@ -103,6 +117,15 @@ For a fit-only round without evaluation downlink:
 ```bash
 python3 scripts/flower_round_benchmark.py server --no-evaluate
 ```
+
+Runtime logs stay ignored by Git. Publishing is manual and explicit:
+
+```bash
+PUBLISH_FLOWER_LOGS=1 ./scripts/push-latest-flower-logs.sh central
+```
+
+That command uses a log branch by default. Direct-to-base publication requires
+the additional explicit `AUTO_LOG_DIRECT_PUSH=1`.
 
 ## Output
 

@@ -29,7 +29,7 @@ print(cfg["app"]["role"])
 PY
 )"
 
-read -r LISTEN_HOST LISTEN_PORT UPSTREAM_HOST UPSTREAM_PORT CONFIG_WINDOW_SIZE < <("${PY}" - "${CONFIG}" <<'PY'
+read -r LISTEN_HOST LISTEN_PORT UPSTREAM_HOST UPSTREAM_PORT < <("${PY}" - "${CONFIG}" <<'PY'
 import sys, yaml
 with open(sys.argv[1], encoding="utf-8") as fh:
     cfg = yaml.safe_load(fh)
@@ -39,7 +39,6 @@ print(
     bridge["listen_port"],
     bridge["upstream_host"],
     bridge["upstream_port"],
-    bridge.get("window_size", 8),
 )
 PY
 )
@@ -56,8 +55,13 @@ EVALUATE="${EVALUATE:-1}"
 MODEL_BYTES="${MODEL_BYTES:-48712}"
 WEIGHTS_NPZ="${WEIGHTS_NPZ:-}"
 BRIDGE_PAYLOAD_BYTES="${BRIDGE_PAYLOAD_BYTES:-160}"
-BRIDGE_WINDOW_SIZE="${BRIDGE_WINDOW_SIZE:-${CONFIG_WINDOW_SIZE}}"
+BRIDGE_WINDOW_SIZE="${BRIDGE_WINDOW_SIZE:-8}"
+BRIDGE_ACK_TIMEOUT_SECONDS="${BRIDGE_ACK_TIMEOUT_SECONDS:-5}"
+BRIDGE_CONTROL_TIMEOUT_SECONDS="${BRIDGE_CONTROL_TIMEOUT_SECONDS:-10}"
+BRIDGE_MAX_RETRIES="${BRIDGE_MAX_RETRIES:-8}"
 BRIDGE_FRAME_INTERVAL_MS="${BRIDGE_FRAME_INTERVAL_MS:-400}"
+BRIDGE_POLL_INTERVAL_MS="${BRIDGE_POLL_INTERVAL_MS:-500}"
+ALLOW_PEER_MISMATCH="${ALLOW_PEER_MISMATCH:-0}"
 STATUS_INTERVAL="${STATUS_INTERVAL:-10}"
 CAPTURE_RADIO_INFO="${CAPTURE_RADIO_INFO:-1}"
 EXPORT_LOG_ARCHIVE="${EXPORT_LOG_ARCHIVE:-1}"
@@ -81,11 +85,14 @@ BENCH_JSONL="${RUN_DIR}/benchmark.jsonl"
 RADIO_INFO_LOG="${RUN_DIR}/radio-info.log"
 SYSTEMD_BEFORE_LOG="${RUN_DIR}/systemd-before.log"
 SYSTEMD_AFTER_LOG="${RUN_DIR}/systemd-after.log"
+SERVICES_BEFORE_FILE="${RUN_DIR}/services-before.txt"
 METADATA_FILE="${RUN_DIR}/metadata.txt"
 REDACTED_CONFIG="${RUN_DIR}/config.redacted.yaml"
 METRICS_FINAL="${RUN_DIR}/metrics-final.json"
 ALL_LOG="${RUN_DIR}/all.log"
 ARCHIVE_FILE="${EXPORT_DIR}/flower-logs-${LOG_ROLE}-${RUN_ID}.tar.gz"
+GIT_COMMIT="$(git -C "${ROOT_DIR}" rev-parse HEAD 2>/dev/null || true)"
+RADIO_FIRMWARE=""
 
 mkdir -p "${RUN_DIR}"
 exec > >(tee -a "${RUN_LOG}") 2>&1
@@ -199,7 +206,12 @@ write_metadata() {
     echo "weights_npz=${WEIGHTS_NPZ:-}"
     echo "bridge_payload_bytes=${BRIDGE_PAYLOAD_BYTES}"
     echo "bridge_window_size=${BRIDGE_WINDOW_SIZE}"
+    echo "bridge_ack_timeout_seconds=${BRIDGE_ACK_TIMEOUT_SECONDS}"
+    echo "bridge_control_timeout_seconds=${BRIDGE_CONTROL_TIMEOUT_SECONDS}"
+    echo "bridge_max_retries=${BRIDGE_MAX_RETRIES}"
     echo "bridge_frame_interval_ms=${BRIDGE_FRAME_INTERVAL_MS}"
+    echo "bridge_poll_interval_ms=${BRIDGE_POLL_INTERVAL_MS}"
+    echo "allow_peer_mismatch=${ALLOW_PEER_MISMATCH}"
     echo "status_interval=${STATUS_INTERVAL}"
     echo "bridge_metrics_interval=${BRIDGE_METRICS_INTERVAL}"
     echo "capture_radio_info=${CAPTURE_RADIO_INFO}"
@@ -211,7 +223,7 @@ write_metadata() {
     echo "python=$("${PY}" --version 2>&1)"
     echo "meshtastic_cli=${MESHTASTIC_CLI}"
     echo "git_branch=$(git branch --show-current 2>/dev/null || true)"
-    echo "git_commit=$(git rev-parse HEAD 2>/dev/null || true)"
+    echo "git_commit=${GIT_COMMIT}"
     echo "git_remote=$(git remote get-url origin 2>/dev/null || true)"
     echo
     echo "git_status:"
@@ -320,6 +332,22 @@ capture_radio_info() {
   redact_log_file "${RADIO_INFO_LOG}"
 }
 
+read_radio_firmware() {
+  "${PY}" - "${RADIO_INFO_LOG}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if not path.exists():
+    print("")
+    raise SystemExit(0)
+text = path.read_text(encoding="utf-8", errors="replace")
+match = re.search(r'"firmwareVersion"\s*:\s*"([^"]+)"', text)
+print(match.group(1) if match else "")
+PY
+}
+
 write_all_log() {
   local tmp="${ALL_LOG}.tmp"
   {
@@ -328,6 +356,7 @@ write_all_log() {
       "${REDACTED_CONFIG}" \
       "${RADIO_INFO_LOG}" \
       "${SYSTEMD_BEFORE_LOG}" \
+      "${SERVICES_BEFORE_FILE}" \
       "${STATUS_LOG}" \
       "${STATUS_JSONL}" \
       "${BENCH_LOG}" \
@@ -364,10 +393,37 @@ export_log_archive() {
   fi
 }
 
+ACTIVE_SERVICES=()
 stop_services() {
-  sudo systemctl stop meshnet-flower-bridge 2>/dev/null || true
-  sudo systemctl stop meshnet 2>/dev/null || true
-  sudo systemctl stop meshnet-telegram 2>/dev/null || true
+  : > "${SERVICES_BEFORE_FILE}"
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "systemctl=unavailable" >> "${SERVICES_BEFORE_FILE}"
+    return
+  fi
+  local service state
+  for service in meshnet-flower-bridge meshnet meshnet-telegram; do
+    state="$(systemctl is-active "${service}" 2>/dev/null || true)"
+    echo "${service}=${state:-unknown}" >> "${SERVICES_BEFORE_FILE}"
+    if [[ "${state}" == "active" ]]; then
+      ACTIVE_SERVICES+=("${service}")
+      sudo systemctl stop "${service}" 2>/dev/null || true
+    fi
+  done
+}
+
+restore_services() {
+  if [[ "${#ACTIVE_SERVICES[@]}" -eq 0 ]]; then
+    return
+  fi
+  local service restore_state
+  for service in "${ACTIVE_SERVICES[@]}"; do
+    if sudo systemctl start "${service}" 2>/dev/null; then
+      restore_state="restored"
+    else
+      restore_state="restore_failed"
+    fi
+    echo "${service}_after=${restore_state}" >> "${SERVICES_BEFORE_FILE}"
+  done
 }
 
 cleanup_done=0
@@ -388,16 +444,24 @@ cleanup() {
   if [[ -f "${METRICS_FILE:-}" ]]; then
     cp "${METRICS_FILE}" "${METRICS_FINAL}" 2>/dev/null || true
   fi
+  restore_services
   capture_systemd_logs "after" "${SYSTEMD_AFTER_LOG}"
   {
     echo
     echo "finished_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "exit_status=${status}"
+    if [[ "${status}" == "130" || "${status}" == "143" ]]; then
+      echo "run_outcome=interrupted"
+    elif [[ "${status}" == "0" ]]; then
+      echo "run_outcome=completed"
+    else
+      echo "run_outcome=failed"
+    fi
   } >> "${METADATA_FILE}" 2>&1 || true
   echo "[run] log_bundle=${RUN_DIR}"
   echo "[run] all_log=${ALL_LOG}"
   echo "[run] archive=${ARCHIVE_FILE}"
-  echo "[run] manual_push_latest_logs=./scripts/push-latest-flower-logs.sh ${LOG_ROLE}"
+  echo "[run] manual_push_latest_logs=PUBLISH_FLOWER_LOGS=1 ./scripts/push-latest-flower-logs.sh ${LOG_ROLE}"
   write_all_log
   export_log_archive
 }
@@ -423,6 +487,7 @@ role = sys.argv[3]
 status_log = Path(sys.argv[4])
 status_jsonl = Path(sys.argv[5])
 previous = {}
+stalled_samples = 0
 
 keys = [
     "active_connections",
@@ -458,7 +523,7 @@ keys = [
 def number(metrics, key):
     return int(metrics.get(key, 0) or 0)
 
-def diagnose(metrics):
+def diagnose(metrics, previous_metrics, stalled_count):
     opened = number(metrics, "sessions_opened")
     conns = number(metrics, "active_connections")
     local_in = number(metrics, "local_bytes_received")
@@ -475,6 +540,17 @@ def diagnose(metrics):
     resets = number(metrics, "sessions_reset")
     radio_ack_timeouts = number(metrics, "radio_ack_timeouts")
     radio_naks = number(metrics, "radio_naks")
+    progress = any(
+        number(metrics, key) > number(previous_metrics, key)
+        for key in (
+            "frames_sent",
+            "frames_received",
+            "stream_window_bytes_sent",
+            "data_bytes_received",
+            "local_bytes_sent",
+            "acknowledgements_received",
+        )
+    )
 
     if resets:
         return "session_reset"
@@ -492,22 +568,32 @@ def diagnose(metrics):
         return "client_no_local_tcp_bytes"
     if local_in > 0 and queued == 0:
         return "local_bytes_not_queued"
-    if queued > 0 and windows == 0:
-        return "queued_no_send_window"
-    if windows > 0 and active > 0 and data_try == 0:
-        return "send_window_entered_no_data_try"
     if errors:
         return "send_window_error"
+    if progress:
+        return "transfer_progress"
+    if active > 0:
+        return "send_window_active"
+    if queued > 0 and windows == 0 and stalled_count >= 3:
+        return "queued_no_send_window"
+    if windows > 0 and data_try == 0 and stalled_count >= 3:
+        return "send_window_entered_no_data_try"
     if windows > 0 and data_try == 0:
         return "send_window_empty_or_closed"
-    if data_try > data_tx:
-        return "radio_send_blocked_or_failed"
-    if data_tx > 0 and data_rx == 0 and local_out == 0:
+    if (
+        data_tx > 0
+        and data_rx == 0
+        and local_out == 0
+        and number(metrics, "acknowledgements_received") == 0
+        and stalled_count >= 3
+    ):
         return "data_tx_no_peer_rx"
-    if data_rx > 0 and local_out == 0:
+    if data_rx > 0 and local_out == 0 and stalled_count >= 3:
         return "data_rx_not_written_to_tcp"
     if local_out > 0:
-        return "tcp_bytes_flowing"
+        return "active_waiting"
+    if stalled_count >= 3 and number(metrics, "pending_bytes") > 0:
+        return "transfer_stalled"
     return "active_waiting"
 
 def append_line(line):
@@ -540,15 +626,49 @@ while True:
     def delta(key):
         return number(metrics, key) - number(previous, key)
 
-    diagnosis = diagnose(metrics)
+    made_progress = any(
+        delta(key) > 0
+        for key in (
+            "frames_sent",
+            "frames_received",
+            "stream_window_bytes_sent",
+            "data_bytes_received",
+            "local_bytes_sent",
+            "acknowledgements_received",
+        )
+    )
+    if number(metrics, "active_connections") > 0 and not made_progress:
+        stalled_samples += 1
+    else:
+        stalled_samples = 0
+
+    diagnosis = diagnose(metrics, previous, stalled_samples)
     uptime = metrics.get("uptime_seconds", 0)
     delta_map = {key: delta(key) for key in keys}
+    queued_total = number(metrics, "stream_bytes_queued")
+    tx_confirmed = number(metrics, "stream_window_bytes_sent")
+    tx_rate = max(0.0, delta("stream_window_bytes_sent") / interval)
+    rx_rate = max(0.0, delta("local_bytes_sent") / interval)
+    progress_percent = (
+        min(100.0, 100.0 * tx_confirmed / queued_total)
+        if queued_total
+        else 0.0
+    )
+    eta_seconds = (
+        number(metrics, "pending_bytes") / tx_rate
+        if tx_rate > 0 and number(metrics, "pending_bytes") > 0
+        else 0.0
+    )
     line = (
         "[status] "
         f"diagnosis={diagnosis} "
         f"up={uptime}s "
         f"conns={number(metrics, 'active_connections')} "
         f"pending={number(metrics, 'pending_bytes')}B "
+        f"queue_progress={tx_confirmed}/{queued_total}B({progress_percent:.1f}%) "
+        f"tx_rate={tx_rate:.1f}B/s "
+        f"rx_rate={rx_rate:.1f}B/s "
+        f"eta={eta_seconds:.0f}s "
         f"packets_tx={number(metrics, 'frames_sent')}(+{delta('frames_sent')}) "
         f"packets_rx={number(metrics, 'frames_received')}(+{delta('frames_received')}) "
         f"ctrl_try={number(metrics, 'control_frames_attempted')}(+{delta('control_frames_attempted')}) "
@@ -618,7 +738,7 @@ capture_systemd_logs "before" "${SYSTEMD_BEFORE_LOG}"
 echo "[run] role=${ROLE} config=${CONFIG}"
 echo "[run] offline_mode=1 (loopback TCP + attached LoRa only; no auto-publish)"
 echo "[run] rounds=${ROUNDS} logical_clients=${LOGICAL_CLIENTS} evaluate=${EVALUATE}"
-echo "[run] bridge_payload_bytes=${BRIDGE_PAYLOAD_BYTES} bridge_window_size=${BRIDGE_WINDOW_SIZE} frame_interval_ms=${BRIDGE_FRAME_INTERVAL_MS}"
+echo "[run] bridge_payload_bytes=${BRIDGE_PAYLOAD_BYTES} bridge_window_size=${BRIDGE_WINDOW_SIZE} ack_timeout_seconds=${BRIDGE_ACK_TIMEOUT_SECONDS} control_timeout_seconds=${BRIDGE_CONTROL_TIMEOUT_SECONDS} max_retries=${BRIDGE_MAX_RETRIES} frame_interval_ms=${BRIDGE_FRAME_INTERVAL_MS} poll_interval_ms=${BRIDGE_POLL_INTERVAL_MS}"
 echo "[run] status_interval=${STATUS_INTERVAL}"
 if [[ -n "${WEIGHTS_NPZ}" ]]; then
   echo "[run] weights_npz=${WEIGHTS_NPZ}"
@@ -636,11 +756,21 @@ echo "[run] metrics_file=${METRICS_FILE}"
 
 stop_services
 capture_radio_info
+RADIO_FIRMWARE="$(read_radio_firmware)"
+echo "radio_firmware=${RADIO_FIRMWARE:-unavailable}" >> "${METADATA_FILE}"
+if [[ -z "${RADIO_FIRMWARE}" ]]; then
+  echo "[run] WARNING: radio firmware version unavailable; peer firmware guard is incomplete"
+fi
 rm -f "${METRICS_FILE}"
 
 echo "[run] starting bridge"
 MESHNET_BRIDGE_PAYLOAD_BYTES="${BRIDGE_PAYLOAD_BYTES}" \
+  MESHNET_BRIDGE_WINDOW_SIZE="${BRIDGE_WINDOW_SIZE}" \
+  MESHNET_BRIDGE_ACK_TIMEOUT_SECONDS="${BRIDGE_ACK_TIMEOUT_SECONDS}" \
+  MESHNET_BRIDGE_CONTROL_TIMEOUT_SECONDS="${BRIDGE_CONTROL_TIMEOUT_SECONDS}" \
+  MESHNET_BRIDGE_MAX_RETRIES="${BRIDGE_MAX_RETRIES}" \
   MESHNET_BRIDGE_FRAME_INTERVAL_MS="${BRIDGE_FRAME_INTERVAL_MS}" \
+  MESHNET_BRIDGE_POLL_INTERVAL_MS="${BRIDGE_POLL_INTERVAL_MS}" \
   MESHNET_BRIDGE_METRICS_INTERVAL_SECONDS="${BRIDGE_METRICS_INTERVAL}" \
   "${MESHNET}" bridge --config "${CONFIG}" >"${BRIDGE_LOG}" 2>&1 &
 BRIDGE_PID="$!"
@@ -657,7 +787,16 @@ start_status_log
 BENCH_ARGS=(
   --payload-bytes "${BRIDGE_PAYLOAD_BYTES}"
   --window-size "${BRIDGE_WINDOW_SIZE}"
+  --frame-interval-ms "${BRIDGE_FRAME_INTERVAL_MS}"
+  --poll-interval-ms "${BRIDGE_POLL_INTERVAL_MS}"
 )
+PEER_ARGS=(
+  --git-commit "${GIT_COMMIT}"
+  --firmware-version "${RADIO_FIRMWARE}"
+)
+if [[ "${ALLOW_PEER_MISMATCH}" == "1" || "${ALLOW_PEER_MISMATCH}" == "true" ]]; then
+  PEER_ARGS+=(--allow-peer-mismatch)
+fi
 if [[ "${EVALUATE}" == "0" || "${EVALUATE}" == "false" ]]; then
   BENCH_ARGS+=(--no-evaluate)
 fi
@@ -676,13 +815,15 @@ if [[ "${ROLE}" == "master" ]]; then
     --rounds "${ROUNDS}" \
     --logical-clients "${LOGICAL_CLIENTS}" \
     --jsonl "${BENCH_JSONL}" \
+    "${PEER_ARGS[@]}" \
     "${BENCH_ARGS[@]}"
 elif [[ "${ROLE}" == "slave" ]]; then
   echo "[run] client benchmark connecting through bridge"
   run_benchmark "${PY}" scripts/flower_round_benchmark.py client \
     --host "${LISTEN_HOST}" \
     --port "${LISTEN_PORT}" \
-    --jsonl "${BENCH_JSONL}"
+    --jsonl "${BENCH_JSONL}" \
+    "${PEER_ARGS[@]}"
 else
   echo "[run] unsupported app.role=${ROLE}; expected master or slave" >&2
   exit 1
