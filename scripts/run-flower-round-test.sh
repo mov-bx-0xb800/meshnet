@@ -50,8 +50,8 @@ esac
 
 ROUNDS="${ROUNDS:-1}"
 LOGICAL_CLIENTS="${LOGICAL_CLIENTS:-1}"
-EVALUATE="${EVALUATE:-1}"
-MODEL_BYTES="${MODEL_BYTES:-}"
+EVALUATE="${EVALUATE:-0}"
+MODEL_BYTES="${MODEL_BYTES:-512}"
 WEIGHTS_NPZ="${WEIGHTS_NPZ:-}"
 STATUS_INTERVAL="${STATUS_INTERVAL:-10}"
 CAPTURE_RADIO_INFO="${CAPTURE_RADIO_INFO:-1}"
@@ -208,6 +208,7 @@ write_metadata() {
     echo "auto_log_direct_push=${AUTO_LOG_DIRECT_PUSH}"
     echo "auto_log_pr=${AUTO_LOG_PR}"
     echo "auto_log_base_branch=${AUTO_LOG_BASE_BRANCH:-default}"
+    echo "bridge_radio_destination_mode=${MESHNET_BRIDGE_RADIO_DESTINATION_MODE:-single_peer_broadcast}"
     echo "publish_log=${PUBLISH_LOG}"
     echo "journal_since=${JOURNAL_SINCE}"
     echo "python=$("${PY}" --version 2>&1)"
@@ -240,6 +241,56 @@ capture_systemd_logs() {
   } >> "${outfile}" 2>&1
 }
 
+redact_log_file() {
+  local path="$1"
+  [[ -f "${path}" ]] || return
+  "${PY}" - "${path}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8", errors="replace")
+secret_keys = (
+    "privateKey",
+    "publicKey",
+    "password",
+    "psk",
+    "wifiPsk",
+    "fixedPin",
+    "bot_token",
+    "allowed_chat_id",
+    "channel_psk_base64",
+)
+for key in secret_keys:
+    text = re.sub(
+        rf'("{re.escape(key)}"\s*:\s*)"[^"]*"',
+        rf'\1"<redacted>"',
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf'("{re.escape(key)}"\s*:\s*)[0-9]+',
+        rf'\1"<redacted>"',
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf'({re.escape(key)}\s*[=:]\s*)\S+',
+        rf'\1<redacted>',
+        text,
+        flags=re.IGNORECASE,
+    )
+text = re.sub(
+    r'(Primary channel URL:\s*)\S+',
+    r'\1<redacted>',
+    text,
+    flags=re.IGNORECASE,
+)
+path.write_text(text, encoding="utf-8")
+PY
+}
+
 capture_radio_info() {
   {
     echo "===== radio-info $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
@@ -269,6 +320,7 @@ capture_radio_info() {
       "${MESHTASTIC_CLI}" --port "${port_output}" --no-nodes --info 2>&1 || true
     fi
   } >> "${RADIO_INFO_LOG}" 2>&1
+  redact_log_file "${RADIO_INFO_LOG}"
 }
 
 write_all_log() {
@@ -427,6 +479,10 @@ keys = [
     "acknowledgements_received",
     "retransmitted_frames",
     "invalid_frames",
+    "radio_broadcast_frames_sent",
+    "radio_ack_received",
+    "radio_ack_timeouts",
+    "radio_naks",
     "sessions_opened",
     "sessions_reset",
 ]
@@ -449,9 +505,15 @@ def diagnose(metrics):
     ctrl_tx = number(metrics, "control_frames_sent")
     ctrl_rx = number(metrics, "control_frames_received")
     resets = number(metrics, "sessions_reset")
+    radio_ack_timeouts = number(metrics, "radio_ack_timeouts")
+    radio_naks = number(metrics, "radio_naks")
 
     if resets:
         return "session_reset"
+    if radio_naks:
+        return "radio_nak"
+    if radio_ack_timeouts and ctrl_tx and not ctrl_rx:
+        return "radio_ack_timeout_no_peer_rx"
     if opened == 0 or conns == 0:
         if ctrl_tx and not ctrl_rx:
             return "control_tx_no_peer_rx"
@@ -539,6 +601,10 @@ while True:
         f"ack_rx={number(metrics, 'acknowledgements_received')}(+{delta('acknowledgements_received')}) "
         f"retrans={number(metrics, 'retransmitted_frames')}(+{delta('retransmitted_frames')}) "
         f"invalid={number(metrics, 'invalid_frames')}(+{delta('invalid_frames')}) "
+        f"rbcast={number(metrics, 'radio_broadcast_frames_sent')}(+{delta('radio_broadcast_frames_sent')}) "
+        f"rack={number(metrics, 'radio_ack_received')}(+{delta('radio_ack_received')}) "
+        f"rack_to={number(metrics, 'radio_ack_timeouts')}(+{delta('radio_ack_timeouts')}) "
+        f"rnak={number(metrics, 'radio_naks')}(+{delta('radio_naks')}) "
         f"opened={number(metrics, 'sessions_opened')} "
         f"resets={number(metrics, 'sessions_reset')}"
     )

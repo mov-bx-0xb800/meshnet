@@ -37,6 +37,10 @@ class StreamMetrics:
     duplicate_frames: int = 0
     out_of_order_frames: int = 0
     invalid_frames: int = 0
+    radio_broadcast_frames_sent: int = 0
+    radio_ack_received: int = 0
+    radio_ack_timeouts: int = 0
+    radio_naks: int = 0
     sessions_opened: int = 0
     sessions_reset: int = 0
     started_at: float = field(default_factory=time.time)
@@ -66,6 +70,10 @@ class StreamMetrics:
             "duplicate_frames": self.duplicate_frames,
             "out_of_order_frames": self.out_of_order_frames,
             "invalid_frames": self.invalid_frames,
+            "radio_broadcast_frames_sent": self.radio_broadcast_frames_sent,
+            "radio_ack_received": self.radio_ack_received,
+            "radio_ack_timeouts": self.radio_ack_timeouts,
+            "radio_naks": self.radio_naks,
             "sessions_opened": self.sessions_opened,
             "sessions_reset": self.sessions_reset,
             "uptime_seconds": round(time.time() - self.started_at, 3),

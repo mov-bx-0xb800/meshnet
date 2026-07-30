@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import secrets
 import socket
 import threading
 import time
+from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from . import logger
 from .config import MeshConfig
 from .errors import MeshNetError, as_meshnet_error, log_meshnet_error
-from .radio import RadioClient, packet_from_mesh_id
+from .radio import BROADCAST_ADDR, RadioClient, packet_from_mesh_id
 from .reliable_stream import ReliableStream, ReliableStreamError, StreamMetrics
 from .stream_protocol import (
     FLAG_EMPTY,
@@ -25,6 +27,20 @@ from .stream_protocol import (
 )
 
 
+OPEN_OK_REPEATS = 5
+RADIO_ACK_CONTROL_TYPES = {FrameType.OPEN, FrameType.OPEN_OK, FrameType.RESET}
+RADIO_DESTINATION_MODE_ENV = "MESHNET_BRIDGE_RADIO_DESTINATION_MODE"
+VALID_RADIO_DESTINATION_MODES = {"direct", "broadcast", "single_peer_broadcast"}
+
+
+@dataclass(frozen=True)
+class FrameSendReport:
+    destination_id: str
+    packet_id: str
+    radio_ack: str = "not_requested"
+    radio_error: str = ""
+
+
 class FrameTransport(Protocol):
     def set_handler(self, handler: Callable[[str, bytes], None]) -> None: ...
 
@@ -32,7 +48,14 @@ class FrameTransport(Protocol):
 
     def stop(self) -> None: ...
 
-    def send(self, peer_id: str, payload: bytes) -> None: ...
+    def send(
+        self,
+        peer_id: str,
+        payload: bytes,
+        *,
+        want_ack: bool = False,
+        ack_timeout_seconds: float | None = None,
+    ) -> FrameSendReport: ...
 
 
 class RadioFrameTransport:
@@ -42,6 +65,16 @@ class RadioFrameTransport:
         self._handler: Callable[[str, bytes], None] | None = None
         self._send_lock = threading.Lock()
         self._next_send = 0.0
+        self._last_rx = 0.0
+        self.destination_mode = os.getenv(
+            RADIO_DESTINATION_MODE_ENV,
+            "single_peer_broadcast",
+        ).strip().lower()
+        if self.destination_mode not in VALID_RADIO_DESTINATION_MODES:
+            raise ValueError(
+                f"{RADIO_DESTINATION_MODE_ENV} must be one of: "
+                + ", ".join(sorted(VALID_RADIO_DESTINATION_MODES))
+            )
 
     def set_handler(self, handler: Callable[[str, bytes], None]) -> None:
         self._handler = handler
@@ -49,11 +82,24 @@ class RadioFrameTransport:
     def start(self) -> None:
         self.radio.add_binary_handler(self._on_binary)
         self.radio.connect(no_nodes=False)
+        effective = "broadcast" if self._uses_broadcast_destination() else "direct"
+        logger.line(
+            "bridge-radio",
+            f"destination_mode={self.destination_mode} effective={effective} "
+            f"peers={len(self.cfg.network.peers)}",
+        )
 
     def stop(self) -> None:
         self.radio.close()
 
-    def send(self, peer_id: str, payload: bytes) -> None:
+    def send(
+        self,
+        peer_id: str,
+        payload: bytes,
+        *,
+        want_ack: bool = False,
+        ack_timeout_seconds: float | None = None,
+    ) -> FrameSendReport:
         mesh_id = self.cfg.mesh_id_for(peer_id)
         if not mesh_id:
             raise MeshNetError(
@@ -62,33 +108,79 @@ class RadioFrameTransport:
                 f"no pinned Meshtastic mesh ID for {peer_id}",
                 "Add this peer's !xxxxxxxx mesh_id to network.peers.",
             )
+        destination_id = BROADCAST_ADDR if self._uses_broadcast_destination() else mesh_id
+        effective_want_ack = want_ack and destination_id != BROADCAST_ADDR
         with self._send_lock:
-            remaining = self._next_send - time.monotonic()
+            interval = self._frame_interval_seconds()
+            next_allowed = max(self._next_send, self._last_rx + interval)
+            remaining = next_allowed - time.monotonic()
             if remaining > 0:
                 time.sleep(remaining)
             logger.line(
                 "bridge-radio",
-                f"tx attempt peer={peer_id} mesh={mesh_id.lower()} bytes={len(payload)}",
+                "tx attempt "
+                f"peer={peer_id} dest={destination_id.lower()} "
+                f"peer_mesh={mesh_id.lower()} bytes={len(payload)} "
+                f"radio_ack={'yes' if effective_want_ack else 'no'}",
             )
             started = time.monotonic()
-            sent = self.radio.send_bytes(payload, destination_id=mesh_id, want_ack=False)
+            sent = self.radio.send_bytes(
+                payload,
+                destination_id=destination_id,
+                want_ack=effective_want_ack,
+                track_ack=effective_want_ack,
+            )
             elapsed = time.monotonic() - started
             logger.line(
                 "bridge-radio",
                 "tx accepted "
-                f"peer={peer_id} mesh={mesh_id.lower()} bytes={len(payload)} "
+                f"peer={peer_id} dest={destination_id.lower()} "
+                f"peer_mesh={mesh_id.lower()} bytes={len(payload)} "
                 f"packet_id={sent.packet_id or '?'} elapsed={elapsed:.3f}s",
             )
-            full_interval = self.cfg.bridge.frame_interval_ms / 1000.0
-            # Full data frames need the configured SHORT_FAST airtime spacing.
-            # Compact ACK/control frames need much less airtime, but retain a
-            # conservative 60 ms floor so the firmware queue is not flooded.
-            interval = max(0.060, full_interval * min(1.0, len(payload) / 233.0))
+            # Use the configured pacing for every LoRa frame. The live logs
+            # showed short control frames accepted by firmware but not received
+            # by the peer when emitted in a fast burst.
             self._next_send = time.monotonic() + interval
+            radio_ack = "not_requested"
+            radio_error = ""
+            if want_ack and destination_id == BROADCAST_ADDR:
+                radio_ack = "not_supported_broadcast"
+            elif effective_want_ack and sent.ack_event is not None:
+                timeout = max(
+                    0.1,
+                    float(ack_timeout_seconds or self.cfg.runtime.radio_ack_timeout_seconds),
+                )
+                if sent.ack_event.wait(timeout=timeout):
+                    radio_error = sent.ack.error if sent.ack is not None else ""
+                    radio_ack = "nak" if radio_error else "received"
+                    logger.line(
+                        "bridge-radio",
+                        "tx radio_ack "
+                        f"peer={peer_id} dest={destination_id.lower()} "
+                        f"packet_id={sent.packet_id or '?'} "
+                        f"status={radio_ack}"
+                        + (f" error={radio_error}" if radio_error else ""),
+                    )
+                else:
+                    radio_ack = "timeout"
+                    logger.line(
+                        "bridge-radio",
+                        "tx radio_ack "
+                        f"peer={peer_id} dest={destination_id.lower()} "
+                        f"packet_id={sent.packet_id or '?'} timeout={timeout:.1f}s",
+                    )
+            return FrameSendReport(
+                destination_id=destination_id,
+                packet_id=sent.packet_id,
+                radio_ack=radio_ack,
+                radio_error=radio_error,
+            )
 
     def _on_binary(self, payload: bytes, packet: dict) -> None:
         if not is_stream_payload(payload):
             return
+        self._last_rx = time.monotonic()
         mesh_id = packet_from_mesh_id(packet).lower()
         peer_id = self.cfg.app_id_for_mesh(mesh_id)
         logger.line(
@@ -107,6 +199,16 @@ class RadioFrameTransport:
             return
         if self._handler is not None:
             self._handler(peer_id, payload)
+
+    def _frame_interval_seconds(self) -> float:
+        return max(0.060, self.cfg.bridge.frame_interval_ms / 1000.0)
+
+    def _uses_broadcast_destination(self) -> bool:
+        if self.destination_mode == "broadcast":
+            return True
+        if self.destination_mode == "single_peer_broadcast":
+            return len(self.cfg.network.peers) == 1
+        return False
 
 
 class BridgeConnection:
@@ -354,7 +456,23 @@ class FlowerBridge:
     def _send_frame(self, peer_id: str, frame: StreamFrame) -> None:
         encoded = encode_frame(frame, self.key)
         logger.line("bridge-frame", f"tx {self._frame_summary(peer_id, frame, len(encoded))}")
-        self.transport.send(peer_id, encoded)
+        report = self.transport.send(
+            peer_id,
+            encoded,
+            want_ack=frame.frame_type in RADIO_ACK_CONTROL_TYPES,
+            ack_timeout_seconds=min(
+                self.cfg.runtime.radio_ack_timeout_seconds,
+                self.cfg.bridge.control_timeout_seconds,
+            ),
+        )
+        if report.destination_id == BROADCAST_ADDR:
+            self.metrics.radio_broadcast_frames_sent += 1
+        if report.radio_ack == "received":
+            self.metrics.radio_ack_received += 1
+        elif report.radio_ack == "timeout":
+            self.metrics.radio_ack_timeouts += 1
+        elif report.radio_ack == "nak":
+            self.metrics.radio_naks += 1
 
     def _send_control(
         self,
@@ -511,7 +629,12 @@ class FlowerBridge:
             )
             existing = self._connection_for(peer_id, session_id)
             if existing is not None:
-                self._send_control(peer_id, FrameType.OPEN_OK, session_id, repeat=2)
+                self._send_control(
+                    peer_id,
+                    FrameType.OPEN_OK,
+                    session_id,
+                    repeat=OPEN_OK_REPEATS,
+                )
                 return
             seen_at = self._seen_sessions.get((peer_id, session_id))
             if seen_at is not None:
@@ -532,7 +655,12 @@ class FlowerBridge:
             self._prune_seen_sessions()
             connection.start()
             self.metrics.sessions_opened += 1
-            self._send_control(peer_id, FrameType.OPEN_OK, session_id, repeat=2)
+            self._send_control(
+                peer_id,
+                FrameType.OPEN_OK,
+                session_id,
+                repeat=OPEN_OK_REPEATS,
+            )
             logger.line(
                 "bridge",
                 f"Opened {peer_id} session {session_id} to "

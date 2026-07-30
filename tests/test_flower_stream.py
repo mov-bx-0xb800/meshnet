@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import socket
 import tempfile
 import threading
@@ -7,11 +8,18 @@ import time
 import unittest
 from pathlib import Path
 from typing import Callable
+from unittest.mock import patch
 
 import yaml
 
 from src.config import load_config
-from src.flower_bridge import FlowerBridge
+from src.flower_bridge import (
+    BROADCAST_ADDR,
+    RADIO_DESTINATION_MODE_ENV,
+    FlowerBridge,
+    FrameSendReport,
+    RadioFrameTransport,
+)
 from src.reliable_stream import ReliableStream, StreamMetrics
 from src.stream_protocol import (
     MAX_STREAM_PAYLOAD,
@@ -155,9 +163,17 @@ class MemoryBus:
         self.transports[transport.node_id] = transport
 
     def send(self, source: str, destination: str, payload: bytes) -> None:
-        target = self.transports[destination]
-        if target.handler is not None:
-            target.handler(source, payload)
+        if destination == BROADCAST_ADDR:
+            targets = [
+                transport
+                for node_id, transport in self.transports.items()
+                if node_id != source
+            ]
+        else:
+            targets = [self.transports[destination]]
+        for target in targets:
+            if target.handler is not None:
+                target.handler(source, payload)
 
 
 class MemoryTransport:
@@ -175,8 +191,48 @@ class MemoryTransport:
     def stop(self) -> None:
         pass
 
-    def send(self, peer_id: str, payload: bytes) -> None:
+    def send(
+        self,
+        peer_id: str,
+        payload: bytes,
+        *,
+        want_ack: bool = False,
+        ack_timeout_seconds: float | None = None,
+    ) -> FrameSendReport:
         self.bus.send(self.node_id, peer_id, payload)
+        return FrameSendReport(destination_id=peer_id, packet_id="")
+
+
+class FakeSentPacket:
+    packet_id = "123"
+    ack_event = None
+    ack = None
+
+
+class FakeRadio:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def send_bytes(
+        self,
+        payload: bytes,
+        *,
+        destination_id: str,
+        want_ack: bool,
+        track_ack: bool,
+    ) -> FakeSentPacket:
+        self.calls.append(
+            {
+                "payload": payload,
+                "destination_id": destination_id,
+                "want_ack": want_ack,
+                "track_ack": track_ack,
+            }
+        )
+        return FakeSentPacket()
+
+    def close(self) -> None:
+        pass
 
 
 class FlowerBridgeIntegrationTests(unittest.TestCase):
@@ -350,6 +406,64 @@ class FlowerBridgeIntegrationTests(unittest.TestCase):
 
         self.assertEqual(results, payloads)
         self.assertGreaterEqual(central.metrics.sessions_opened, 2)
+
+    def test_single_peer_radio_transport_uses_broadcast_destination_by_default(self) -> None:
+        cfg = self._config(
+            name="central",
+            node_id="central-001",
+            role="master",
+            master_id="central-001",
+            slave_id="client-001",
+            peer_id="client-001",
+            peer_mesh="!00000001",
+            listen_port=free_port(),
+            upstream_port=self.echo_port,
+        )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(RADIO_DESTINATION_MODE_ENV, None)
+            transport = RadioFrameTransport(cfg)
+        fake = FakeRadio()
+        transport.radio = fake
+
+        report = transport.send(
+            "client-001",
+            b"abc",
+            want_ack=True,
+            ack_timeout_seconds=0.1,
+        )
+
+        self.assertEqual(report.destination_id, BROADCAST_ADDR)
+        self.assertEqual(report.radio_ack, "not_supported_broadcast")
+        self.assertEqual(fake.calls[0]["destination_id"], BROADCAST_ADDR)
+        self.assertFalse(fake.calls[0]["want_ack"])
+
+    def test_radio_transport_can_be_forced_to_direct_destination(self) -> None:
+        cfg = self._config(
+            name="central",
+            node_id="central-001",
+            role="master",
+            master_id="central-001",
+            slave_id="client-001",
+            peer_id="client-001",
+            peer_mesh="!00000001",
+            listen_port=free_port(),
+            upstream_port=self.echo_port,
+        )
+        with patch.dict(os.environ, {RADIO_DESTINATION_MODE_ENV: "direct"}):
+            transport = RadioFrameTransport(cfg)
+        fake = FakeRadio()
+        transport.radio = fake
+
+        report = transport.send(
+            "client-001",
+            b"abc",
+            want_ack=True,
+            ack_timeout_seconds=0.1,
+        )
+
+        self.assertEqual(report.destination_id, "!00000001")
+        self.assertEqual(fake.calls[0]["destination_id"], "!00000001")
+        self.assertTrue(fake.calls[0]["want_ack"])
 
     def _config(
         self,
