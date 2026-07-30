@@ -27,14 +27,75 @@ print(cfg["app"]["role"])
 PY
 )"
 
-read -r BRIDGE_HOST BRIDGE_PORT < <("${PY}" - "${CONFIG}" <<'PY'
+read -r LISTEN_HOST LISTEN_PORT UPSTREAM_HOST UPSTREAM_PORT < <("${PY}" - "${CONFIG}" <<'PY'
 import sys, yaml
 with open(sys.argv[1], encoding="utf-8") as fh:
     cfg = yaml.safe_load(fh)
 bridge = cfg["bridge"]
-print(bridge["listen_host"], bridge["listen_port"])
+print(
+    bridge["listen_host"],
+    bridge["listen_port"],
+    bridge["upstream_host"],
+    bridge["upstream_port"],
+)
 PY
 )
+
+"${PY}" - "${CONFIG}" <<'PY'
+import sys, yaml
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    cfg = yaml.safe_load(fh)
+
+errors = []
+radio = cfg.get("radio", {})
+telegram = cfg.get("telegram", {})
+network = cfg.get("network", {})
+bridge = cfg.get("bridge", {})
+role = cfg.get("app", {}).get("role")
+loopback_hosts = {"127.0.0.1", "localhost", "::1"}
+placeholder_mesh_ids = {
+    "",
+    "!00000001",
+    "!00000002",
+    "!00000003",
+    "!CLIENT_RADIO_ID",
+    "!CENTRAL_RADIO_ID",
+}
+
+if role not in {"master", "slave"}:
+    errors.append("app.role must be master or slave")
+if bridge.get("enabled") is not True:
+    errors.append("bridge.enabled must be true")
+if bridge.get("listen_host") not in loopback_hosts:
+    errors.append("bridge.listen_host must be loopback only, usually 127.0.0.1")
+if bridge.get("upstream_host") not in loopback_hosts:
+    errors.append("bridge.upstream_host must be loopback only, usually 127.0.0.1")
+if radio.get("ignore_mqtt") is not True:
+    errors.append("radio.ignore_mqtt must be true")
+if radio.get("ok_to_mqtt") is not False:
+    errors.append("radio.ok_to_mqtt must be false")
+if network.get("allow_broadcast") is not False:
+    errors.append("network.allow_broadcast must be false")
+if telegram.get("enabled") is not False:
+    errors.append("telegram.enabled must be false")
+if telegram.get("bot_token") or telegram.get("allowed_chat_id"):
+    errors.append("telegram bot_token and allowed_chat_id must be empty for this test")
+
+peers = network.get("peers") or []
+for index, peer in enumerate(peers):
+    mesh_id = str(peer.get("mesh_id", "")).strip()
+    if mesh_id in placeholder_mesh_ids:
+        errors.append(f"network.peers[{index}].mesh_id is still a placeholder")
+
+if errors:
+    print("[run] REFUSING: Flower round test is not locked to local-radio LoRa-only config.", file=sys.stderr)
+    for error in errors:
+        print(f"[run]   - {error}", file=sys.stderr)
+    sys.exit(1)
+
+print("[run] LoRa-only guard passed: MQTT off, Telegram off, loopback TCP only, pinned peer IDs present.")
+PY
 
 ROUNDS="${ROUNDS:-1}"
 LOGICAL_CLIENTS="${LOGICAL_CLIENTS:-1}"
@@ -84,6 +145,16 @@ if ! kill -0 "${BRIDGE_PID}" 2>/dev/null; then
   exit 1
 fi
 
+run_benchmark() {
+  local status=0
+  "$@" || status=$?
+  if [[ "${status}" -ne 0 ]]; then
+    echo "[run] benchmark failed with exit ${status}. Last bridge log lines:" >&2
+    tail -n 120 "${BRIDGE_LOG}" >&2 || true
+    exit "${status}"
+  fi
+}
+
 BENCH_ARGS=()
 if [[ "${EVALUATE}" == "0" || "${EVALUATE}" == "false" ]]; then
   BENCH_ARGS+=(--no-evaluate)
@@ -97,18 +168,18 @@ fi
 
 if [[ "${ROLE}" == "master" ]]; then
   echo "[run] central benchmark server waiting for client"
-  "${PY}" scripts/flower_round_benchmark.py server \
-    --host "${BRIDGE_HOST}" \
-    --port "${BRIDGE_PORT}" \
+  run_benchmark "${PY}" scripts/flower_round_benchmark.py server \
+    --host "${UPSTREAM_HOST}" \
+    --port "${UPSTREAM_PORT}" \
     --rounds "${ROUNDS}" \
     --logical-clients "${LOGICAL_CLIENTS}" \
     --jsonl "${BENCH_JSONL}" \
     "${BENCH_ARGS[@]}"
 elif [[ "${ROLE}" == "slave" ]]; then
   echo "[run] client benchmark connecting through bridge"
-  "${PY}" scripts/flower_round_benchmark.py client \
-    --host "${BRIDGE_HOST}" \
-    --port "${BRIDGE_PORT}" \
+  run_benchmark "${PY}" scripts/flower_round_benchmark.py client \
+    --host "${LISTEN_HOST}" \
+    --port "${LISTEN_PORT}" \
     --jsonl "${BENCH_JSONL}"
 else
   echo "[run] unsupported app.role=${ROLE}; expected master or slave" >&2
